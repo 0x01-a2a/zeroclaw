@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-android:
+    name: Build Android ARM64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Android NDK
+        run: |
+          NDK_VERSION="r26d"
+          NDK_ZIP="android-ndk-${NDK_VERSION}-linux.zip"
+          curl -fsSL "https://dl.google.com/android/repository/${NDK_ZIP}" -o "/tmp/${NDK_ZIP}"
+          unzip -q "/tmp/${NDK_ZIP}" -d "${RUNNER_TEMP}"
+          NDK_HOME="${RUNNER_TEMP}/android-ndk-${NDK_VERSION}"
+          TOOLCHAIN="${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "ANDROID_NDK_HOME=${NDK_HOME}" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${TOOLCHAIN}/aarch64-linux-android21-clang" >> "$GITHUB_ENV"
+          echo "CC_aarch64_linux_android=${TOOLCHAIN}/aarch64-linux-android21-clang" >> "$GITHUB_ENV"
+          echo "CXX_aarch64_linux_android=${TOOLCHAIN}/aarch64-linux-android21-clang++" >> "$GITHUB_ENV"
+          echo "AR_aarch64_linux_android=${TOOLCHAIN}/llvm-ar" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: cargo build --release --locked --features channel-zerox1 --target aarch64-linux-android
+
+      - name: Rename binary
+        run: cp target/aarch64-linux-android/release/zeroclaw zeroclaw-android-arm64
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: zeroclaw-android-arm64
+          generate_release_notes: true
