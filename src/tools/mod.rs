@@ -60,6 +60,7 @@ pub mod memory_store;
 pub mod model_routing_config;
 pub mod openclaw_migration;
 pub mod pdf_read;
+pub mod phone;
 pub mod pptx_read;
 pub mod process;
 pub mod proxy_config;
@@ -83,6 +84,8 @@ pub mod web_fetch;
 pub mod web_search_config;
 pub mod web_search_tool;
 pub mod xlsx_read;
+#[cfg(feature = "channel-zerox1")]
+pub mod zerox1;
 
 pub use apply_patch::ApplyPatchTool;
 #[allow(unused_imports)]
@@ -672,6 +675,72 @@ pub fn all_tools_with_runtime(
                 description: tool.description.clone(),
                 parameters: tool.parameters.clone(),
             })));
+        }
+    }
+
+    // Phone bridge tools (enabled when [phone] config section is present and enabled)
+    if let Some(phone_cfg) = root_config.phone.as_ref().filter(|c| c.enabled) {
+        let url     = phone_cfg.bridge_url.trim().to_string();
+        let secret  = phone_cfg.secret.clone();
+        let timeout = phone_cfg.timeout_secs;
+
+        // MED-12: validate bridge_url is loopback-only to prevent SSRF.
+        let is_loopback = url
+            .trim_start_matches("http://")
+            .starts_with("127.0.0.1")
+            || url.trim_start_matches("http://").starts_with("[::1]");
+
+        if url.is_empty() {
+            tracing::warn!("phone tools: skipped because bridge_url is empty");
+        } else if !is_loopback {
+            tracing::error!(
+                "phone tools: bridge_url '{}' is not a loopback address — refusing to register tools (SSRF risk)",
+                url
+            );
+        } else if secret.is_empty() {
+            tracing::warn!("phone tools: skipped because secret is empty — bridge auth would fail");
+        } else {
+            tool_arcs.push(Arc::new(phone::PhoneContactsRead::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneContactsWrite::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneSmsRead::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneSmsSend::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneLocation::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneCalendarRead::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneCalendarWrite::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneNotify::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneCallLog::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneClipboardRead::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneClipboardWrite::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneCameraCapture::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneAudioRecord::new(url, secret, timeout)));
+            tracing::info!("phone tools: registered 13 bridge tools");
+        }
+    }
+
+    // ZeroX1 mesh tools (enabled when channel-zerox1 feature is active)
+    #[cfg(feature = "channel-zerox1")]
+    if let Some(ref zx) = root_config.channels_config.zerox1 {
+        let api_base = zx.node_api_url.trim().to_string();
+        if api_base.is_empty() {
+            tracing::warn!("zerox1 tools: skipped because node_api_url is empty");
+        } else {
+            let token = zx.token.clone();
+            tool_arcs.push(Arc::new(zerox1::Zerox1ProposeTool::new(
+                api_base.clone(),
+                token.clone(),
+            )));
+            tool_arcs.push(Arc::new(zerox1::Zerox1AcceptTool::new(
+                api_base.clone(),
+                token.clone(),
+            )));
+            tool_arcs.push(Arc::new(zerox1::Zerox1RejectTool::new(
+                api_base.clone(),
+                token.clone(),
+            )));
+            tool_arcs.push(Arc::new(zerox1::Zerox1DeliverTool::new(
+                api_base,
+                token,
+            )));
         }
     }
 

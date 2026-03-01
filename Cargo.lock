@@ -4758,6 +4758,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "plugin-zerox1"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "futures-util",
+ "hex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.28.0",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "png"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9096,6 +9113,7 @@ dependencies = [
  "opentelemetry_sdk",
  "parking_lot",
  "pdf-extract",
+ "plugin-zerox1",
  "postgres",
  "probe-rs",
  "prometheus",

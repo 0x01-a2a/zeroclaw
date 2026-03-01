@@ -36,6 +36,8 @@ pub mod nextcloud_talk;
 pub mod nostr;
 pub mod qq;
 pub mod signal;
+#[cfg(feature = "channel-zerox1")]
+pub mod zerox1;
 pub mod slack;
 pub mod telegram;
 pub mod traits;
@@ -68,6 +70,8 @@ pub use nextcloud_talk::NextcloudTalkChannel;
 pub use nostr::NostrChannel;
 pub use qq::QQChannel;
 pub use signal::SignalChannel;
+#[cfg(feature = "channel-zerox1")]
+pub use zerox1::Zerox1Channel;
 pub use slack::SlackChannel;
 pub use telegram::TelegramChannel;
 pub use traits::{Channel, SendMessage};
@@ -5174,7 +5178,38 @@ fn collect_configured_channels(
             channel: Arc::new(AcpChannel::new(acp.clone())),
         });
     }
+
+    #[cfg(not(feature = "channel-zerox1"))]
+    if config.channels_config.zerox1.is_some() {
+        tracing::warn!(
+            "ZeroX1 channel is configured but this build was compiled without `channel-zerox1`; skipping."
+        );
+    }
+
     channels
+}
+
+#[cfg(feature = "channel-zerox1")]
+async fn append_zerox1_channel_if_available(
+    config: &Config,
+    channels: &mut Vec<ConfiguredChannel>,
+    startup_context: &str,
+) -> Option<String> {
+    let zx = config.channels_config.zerox1.as_ref()?;
+    match Zerox1Channel::new(zx.node_api_url.clone(), zx.token.clone()) {
+        Ok(channel) => {
+            channels.push(ConfiguredChannel {
+                display_name: "ZeroX1",
+                channel: Arc::new(channel),
+            });
+            None
+        }
+        Err(err) => {
+            let reason = format!("ZeroX1 channel init failed during {startup_context}: {err}");
+            tracing::warn!("{reason}");
+            Some(reason)
+        }
+    }
 }
 
 async fn append_nostr_channel_if_available(
@@ -5206,6 +5241,13 @@ pub async fn doctor_channels(config: Config) -> Result<()> {
 
     if let Some(reason) =
         append_nostr_channel_if_available(&config, &mut channels, "health check").await
+    {
+        init_failures.push(reason);
+    }
+
+    #[cfg(feature = "channel-zerox1")]
+    if let Some(reason) =
+        append_zerox1_channel_if_available(&config, &mut channels, "health check").await
     {
         init_failures.push(reason);
     }
@@ -5522,6 +5564,14 @@ pub async fn start_channels(config: Config) -> Result<()> {
     let mut init_failures = Vec::new();
     if let Some(reason) =
         append_nostr_channel_if_available(&config, &mut configured_channels, "runtime startup")
+            .await
+    {
+        init_failures.push(reason);
+    }
+
+    #[cfg(feature = "channel-zerox1")]
+    if let Some(reason) =
+        append_zerox1_channel_if_available(&config, &mut configured_channels, "runtime startup")
             .await
     {
         init_failures.push(reason);

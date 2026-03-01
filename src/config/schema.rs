@@ -391,6 +391,32 @@ pub struct Config {
     /// WASM plugin engine configuration (`[wasm]` section).
     #[serde(default)]
     pub wasm: WasmConfig,
+
+    /// Phone bridge configuration for Android phone API access (`[phone]`).
+    #[serde(default)]
+    pub phone: Option<PhoneConfig>,
+}
+
+/// Phone bridge configuration — enables ZeroClaw to call Android phone APIs via
+/// the local HTTP bridge server running on 127.0.0.1:9092 inside the mobile app.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+pub struct PhoneConfig {
+    /// Enable the phone bridge tools.
+    pub enabled: bool,
+    /// Base URL of the phone bridge server (e.g. "http://127.0.0.1:9092").
+    #[serde(default)]
+    pub bridge_url: String,
+    /// Shared secret written into the TOML by NodeService.
+    /// Sent as `X-Bridge-Token` on every request.
+    #[serde(default)]
+    pub secret: String,
+    /// HTTP request timeout in seconds.
+    #[serde(default = "default_phone_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn default_phone_timeout() -> u64 {
+    10
 }
 
 /// Named provider profile definition compatible with Codex app-server style config.
@@ -4166,6 +4192,8 @@ pub struct ChannelsConfig {
     /// QQ Official Bot channel configuration.
     pub qq: Option<QQConfig>,
     pub nostr: Option<NostrConfig>,
+    /// ZeroX1 mesh network channel configuration.
+    pub zerox1: Option<Zerox1Config>,
     /// ClawdTalk voice channel configuration.
     pub clawdtalk: Option<crate::channels::clawdtalk::ClawdTalkConfig>,
     /// ACK emoji reaction policy overrides for channels that support message reactions.
@@ -4326,6 +4354,7 @@ impl Default for ChannelsConfig {
             napcat: None,
             qq: None,
             nostr: None,
+            zerox1: None,
             clawdtalk: None,
             ack_reaction: AckReactionChannelsConfig::default(),
             message_timeout_secs: default_channel_message_timeout_secs(),
@@ -6117,6 +6146,52 @@ pub fn default_nostr_relays() -> Vec<String> {
     ]
 }
 
+// ── ZeroX1 channel config ─────────────────────────────────────────────────
+
+/// Configuration for the ZeroX1 mesh network channel.
+///
+/// ```toml
+/// [channels_config.zerox1]
+/// node_api_url = "http://127.0.0.1:9090"  # local node (default)
+/// # token = "hex64"                        # hosted-agent token
+/// # capabilities   = ["summarization", "qa"]
+/// # min_fee_usdc   = 0.01
+/// # min_reputation = 50
+/// # auto_accept    = false
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Zerox1Config {
+    /// Base HTTP URL of the zerox1-node API.
+    /// Local mode: `"http://127.0.0.1:9090"`.
+    /// Hosted mode: the host node's public API URL.
+    pub node_api_url: String,
+    /// Bearer token for hosted-agent authentication.
+    /// Set only when using a remote host node (registered via `/hosted/register`).
+    #[serde(default)]
+    pub token: Option<String>,
+    /// Capabilities this agent advertises on the mesh (informational).
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    /// Minimum fee in USDC required to accept incoming proposals.
+    #[serde(default)]
+    pub min_fee_usdc: f64,
+    /// Minimum reputation score required to accept proposals from a sender.
+    #[serde(default)]
+    pub min_reputation: u32,
+    /// Automatically accept proposals that meet the fee and reputation thresholds.
+    #[serde(default)]
+    pub auto_accept: bool,
+}
+
+impl ChannelConfig for Zerox1Config {
+    fn name() -> &'static str {
+        "ZeroX1"
+    }
+    fn desc() -> &'static str {
+        "0x01 mesh network"
+    }
+}
+
 // ── Config impl ──────────────────────────────────────────────────
 
 impl Default for Config {
@@ -6178,6 +6253,7 @@ impl Default for Config {
             mcp: McpConfig::default(),
             model_support_vision: None,
             wasm: WasmConfig::default(),
+            phone: None,
         }
     }
 }
@@ -9523,6 +9599,7 @@ ws_url = "ws://127.0.0.1:3002"
                 napcat: None,
                 qq: None,
                 nostr: None,
+                zerox1: None,
                 clawdtalk: None,
                 ack_reaction: AckReactionChannelsConfig::default(),
                 message_timeout_secs: 300,
@@ -10487,6 +10564,7 @@ allowed_users = ["@ops:matrix.org"]
             napcat: None,
             qq: None,
             nostr: None,
+            zerox1: None,
             clawdtalk: None,
             ack_reaction: AckReactionChannelsConfig::default(),
             message_timeout_secs: 300,
@@ -10834,6 +10912,7 @@ channel_id = "C123"
             napcat: None,
             qq: None,
             nostr: None,
+            zerox1: None,
             clawdtalk: None,
             ack_reaction: AckReactionChannelsConfig::default(),
             message_timeout_secs: 300,

@@ -237,6 +237,7 @@ pub async fn run_wizard_with_migration(
         mcp: crate::config::schema::McpConfig::default(),
         model_support_vision: None,
         wasm: crate::config::WasmConfig::default(),
+        phone: None,
     };
 
     println!(
@@ -753,6 +754,7 @@ async fn run_quick_setup_with_home(
         mcp: crate::config::schema::McpConfig::default(),
         model_support_vision: None,
         wasm: crate::config::WasmConfig::default(),
+        phone: None,
     };
     if no_totp {
         config.security.otp.enabled = false;

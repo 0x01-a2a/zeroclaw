@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/robot-kit"]
+members = [".", "crates/robot-kit", "crates/plugin-zerox1"]
 resolver = "2"
 
 [package]
@@ -27,6 +27,9 @@ tokio-stream = { version = "0.1.18", default-features = false, features = ["fs",
 
 # HTTP client - minimal features
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking", "multipart", "stream", "socks"] }
+
+# 0x01 mesh network plugin (zerox1-node HTTP/WS client + envelope types)
+plugin-zerox1 = { path = "crates/plugin-zerox1", optional = true }
 
 # Matrix client + E2EE decryption
 matrix-sdk = { version = "0.16", optional = true, default-features = false, features = ["e2e-encryption", "rustls-tls", "markdown", "sqlite"] }
@@ -209,6 +212,8 @@ default = []
 hardware = ["nusb", "tokio-serial"]
 channel-matrix = ["dep:matrix-sdk"]
 channel-lark = ["dep:prost"]
+# channel-zerox1 = 0x01 mesh network channel + tools (requires running zerox1-node)
+channel-zerox1 = ["dep:plugin-zerox1"]
 memory-postgres = ["dep:postgres", "dep:tokio-postgres-rustls"]
 observability-otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
 peripheral-rpi = ["rppal"]
