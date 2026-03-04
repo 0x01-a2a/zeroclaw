@@ -106,6 +106,7 @@ impl HttpRequestTool {
             .collect()
     }
 
+    #[allow(clippy::type_complexity)]
     fn resolve_credential_profile(
         &self,
         profile_name: &str,

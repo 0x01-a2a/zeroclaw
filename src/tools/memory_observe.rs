@@ -4,6 +4,7 @@ use crate::security::policy::ToolOperation;
 use crate::security::SecurityPolicy;
 use async_trait::async_trait;
 use serde_json::json;
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 /// Store observational memory entries in a dedicated category.
@@ -117,7 +118,7 @@ impl Tool for MemoryObserveTool {
             if let Some(confidence) = confidence {
                 metadata.push(format!("confidence={confidence:.3}"));
             }
-            content.push_str(&format!("\n\n[metadata] {}", metadata.join(", ")));
+            let _ = write!(content, "\n\n[metadata] {}", metadata.join(", "));
         }
 
         if let Err(error) = self

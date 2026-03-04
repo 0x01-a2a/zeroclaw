@@ -40,6 +40,7 @@ fn send_error(context: &str, err: anyhow::Error) -> ToolResult {
 }
 
 /// Obtain a [`Zerox1Client`] from the tool's stored fields.
+#[allow(clippy::ref_option)]
 fn make_client(api_base: &str, token: &Option<String>) -> Result<Zerox1Client> {
     Zerox1Client::new(api_base, token.clone())
 }
@@ -123,7 +124,6 @@ impl Tool for Zerox1ProposeTool {
             client
                 .hosted_send(tok, "PROPOSE", Some(recipient), &conv_id, payload.as_bytes())
                 .await
-                .map(|_| ())
         } else {
             client
                 .send_envelope("PROPOSE", Some(recipient), &conv_id, payload.as_bytes())

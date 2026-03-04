@@ -2211,6 +2211,7 @@ async fn handle_runtime_command_if_needed(
     /// - Grant session and persistent runtime grants
     /// - Persist to config
     /// - Clear exclusions
+    ///
     /// Returns the approval success message.
     async fn handle_confirm_tool_approval_side_effects(
         ctx: &ChannelRuntimeContext,
@@ -5190,7 +5191,7 @@ fn collect_configured_channels(
 }
 
 #[cfg(feature = "channel-zerox1")]
-async fn append_zerox1_channel_if_available(
+fn append_zerox1_channel_if_available(
     config: &Config,
     channels: &mut Vec<ConfiguredChannel>,
     startup_context: &str,
@@ -5247,7 +5248,7 @@ pub async fn doctor_channels(config: Config) -> Result<()> {
 
     #[cfg(feature = "channel-zerox1")]
     if let Some(reason) =
-        append_zerox1_channel_if_available(&config, &mut channels, "health check").await
+        append_zerox1_channel_if_available(&config, &mut channels, "health check")
     {
         init_failures.push(reason);
     }
@@ -5572,7 +5573,6 @@ pub async fn start_channels(config: Config) -> Result<()> {
     #[cfg(feature = "channel-zerox1")]
     if let Some(reason) =
         append_zerox1_channel_if_available(&config, &mut configured_channels, "runtime startup")
-            .await
     {
         init_failures.push(reason);
     }

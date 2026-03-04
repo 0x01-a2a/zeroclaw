@@ -27,9 +27,9 @@ pub enum BrowserChoice {
 
 impl BrowserChoice {
     /// Parse from config string
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
-            "disable" => Self::Disable,
             "brave" => Self::Brave,
             "chrome" => Self::Chrome,
             "firefox" => Self::Firefox,

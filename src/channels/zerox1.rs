@@ -129,8 +129,6 @@ impl Channel for Zerox1Channel {
                                 Err(_) => continue,
                             }
                         }
-                        tokio_tungstenite::tungstenite::Message::Ping(_)
-                        | tokio_tungstenite::tungstenite::Message::Pong(_) => continue,
                         tokio_tungstenite::tungstenite::Message::Close(_) => break,
                         _ => continue,
                     };

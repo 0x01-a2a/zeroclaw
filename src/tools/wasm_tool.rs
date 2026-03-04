@@ -231,7 +231,7 @@ mod inner {
     not(any(target_os = "linux", target_os = "macos", target_os = "windows"))
 ))]
 mod inner {
-    use super::*;
+    use super::{async_trait, Value, Path, Tool, ToolResult};
 
     pub(super) fn unavailable_message(
         feature_enabled: bool,

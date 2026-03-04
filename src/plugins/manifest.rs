@@ -63,6 +63,7 @@ pub struct PluginManifest {
 }
 
 /// Result of attempting to load a manifest from a directory.
+#[allow(clippy::large_enum_variant)]
 pub enum ManifestLoadResult {
     Ok {
         manifest: PluginManifest,

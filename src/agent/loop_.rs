@@ -364,7 +364,7 @@ where
 }
 
 fn should_inject_safety_heartbeat(counter: usize, interval: usize) -> bool {
-    interval > 0 && counter > 0 && counter % interval == 0
+    interval > 0 && counter > 0 && counter.is_multiple_of(interval)
 }
 
 fn should_emit_verbose_progress(mode: ProgressMode) -> bool {

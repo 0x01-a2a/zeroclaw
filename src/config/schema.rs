@@ -5033,6 +5033,7 @@ pub struct BlueBubblesConfig {
     pub ignore_senders: Vec<String>,
 }
 
+#[allow(clippy::missing_fields_in_debug)]
 impl std::fmt::Debug for BlueBubblesConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let redacted_server_url = redact_url_userinfo_for_debug(&self.server_url);
@@ -5067,7 +5068,7 @@ fn redact_url_userinfo_for_debug(raw: &str) -> String {
     let auth_start = scheme_idx + 3;
     let rest = &raw[auth_start..];
     let auth_end_rel = rest
-        .find(|c| c == '/' || c == '?' || c == '#')
+        .find(['/', '?', '#'])
         .unwrap_or(rest.len());
     let authority = &rest[..auth_end_rel];
 
@@ -7153,7 +7154,7 @@ impl Config {
             config.workspace_dir = workspace_dir;
             let store = crate::security::SecretStore::new(&zeroclaw_dir, config.secrets.encrypt);
             decrypt_optional_secret(&store, &mut config.api_key, "config.api_key")?;
-            for (profile_name, profile) in config.model_providers.iter_mut() {
+            for (profile_name, profile) in &mut config.model_providers {
                 let secret_path = format!("config.model_providers.{profile_name}.api_key");
                 decrypt_optional_secret(&store, &mut profile.api_key, &secret_path)?;
             }
@@ -8599,10 +8600,10 @@ impl Config {
             let normalized = value.trim().to_ascii_lowercase();
             match normalized.as_str() {
                 "1" | "true" | "yes" | "on" => {
-                    self.security.url_access.require_first_visit_approval = true
+                    self.security.url_access.require_first_visit_approval = true;
                 }
                 "0" | "false" | "no" | "off" => {
-                    self.security.url_access.require_first_visit_approval = false
+                    self.security.url_access.require_first_visit_approval = false;
                 }
                 _ => {}
             }
@@ -8614,10 +8615,10 @@ impl Config {
             let normalized = value.trim().to_ascii_lowercase();
             match normalized.as_str() {
                 "1" | "true" | "yes" | "on" => {
-                    self.security.url_access.enforce_domain_allowlist = true
+                    self.security.url_access.enforce_domain_allowlist = true;
                 }
                 "0" | "false" | "no" | "off" => {
-                    self.security.url_access.enforce_domain_allowlist = false
+                    self.security.url_access.enforce_domain_allowlist = false;
                 }
                 _ => {}
             }
@@ -8782,7 +8783,7 @@ impl Config {
         let store = crate::security::SecretStore::new(zeroclaw_dir, self.secrets.encrypt);
 
         encrypt_optional_secret(&store, &mut config_to_save.api_key, "config.api_key")?;
-        for (profile_name, profile) in config_to_save.model_providers.iter_mut() {
+        for (profile_name, profile) in &mut config_to_save.model_providers {
             let secret_path = format!("config.model_providers.{profile_name}.api_key");
             encrypt_optional_secret(&store, &mut profile.api_key, &secret_path)?;
         }

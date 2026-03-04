@@ -358,15 +358,13 @@ impl NapcatChannel {
                         }
                     }
                 }
-                Ok(Message::Binary(_)) => {}
+                Ok(Message::Binary(_) | Message::Pong(_) | Message::Frame(_)) => {}
                 Ok(Message::Ping(payload)) => {
                     socket.send(Message::Pong(payload)).await?;
                 }
-                Ok(Message::Pong(_)) => {}
                 Ok(Message::Close(frame)) => {
                     return Err(anyhow!("Napcat websocket closed: {:?}", frame));
                 }
-                Ok(Message::Frame(_)) => {}
                 Err(err) => {
                     return Err(anyhow!("Napcat websocket error: {err}"));
                 }

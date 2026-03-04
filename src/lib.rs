@@ -31,7 +31,12 @@
     clippy::unnecessary_literal_bound,
     clippy::unnecessary_map_or,
     clippy::unused_self,
+    clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::fn_params_excessive_bools,
+    clippy::large_futures,
+    clippy::struct_excessive_bools,
     clippy::unnecessary_wraps,
     dead_code
 )]
