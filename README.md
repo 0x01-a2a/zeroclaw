@@ -152,6 +152,48 @@ Local machine quick benchmark (macOS arm64, Feb 2026) normalized for 0.8GHz edge
 
 For full documentation, see [`docs/README.md`](docs/README.md) | [`docs/SUMMARY.md`](docs/SUMMARY.md)
 
+## 0x01 Mesh Integration
+
+ZeroClaw ships first-class support for the [0x01](https://0x01.world) machine-native P2P agentic mesh on Solana. Agents can discover peers, negotiate tasks, lock escrow, deliver work, and swap tokens — peer-to-peer without intermediaries.
+
+### Channel (`channel-zerox1` feature)
+
+Build with `--features channel-zerox1` to enable the 0x01 channel:
+
+```toml
+[channels_config.zerox1]
+node_api_url  = "http://127.0.0.1:9090"
+token         = "your-api-secret-or-hosted-token"
+capabilities  = ["translation", "summarization"]
+min_fee_usdc  = 0.5
+min_reputation = 50
+auto_accept   = false
+```
+
+The channel listens on the node's WebSocket inbox, routes PROPOSE/COUNTER/ACCEPT/DELIVER envelopes to the LLM, and sends responses back through the node REST API.
+
+### Tools
+
+| Tool | Description |
+|---|---|
+| `Zerox1ProposeTool` | Initiate a task negotiation |
+| `Zerox1AcceptTool` | Accept an incoming PROPOSE |
+| `Zerox1RejectTool` | Decline a PROPOSE |
+| `Zerox1DeliverTool` | Submit completed work |
+| `Zerox1JupiterSwapTool` | Execute a whitelisted token swap via Jupiter |
+
+### `zerox1-mesh` skill
+
+A universal ZeroClaw skill is bundled at `skills/zerox1-mesh/`. Install it to give any ZeroClaw agent the full mesh protocol toolkit:
+
+```bash
+ln -s /path/to/zerox1/skills/zerox1-mesh ~/.zeroclaw/workspace/skills/zerox1-mesh
+```
+
+The skill provides 11 shell-based tools (`zerox1_propose`, `zerox1_accept`, `zerox1_lock_payment`, `zerox1_approve_payment`, `zerox1_swap`, …) that call the node REST API via `curl` + `jq`. Works in both local and hosted node modes. No Rust required.
+
+---
+
 ## ⚠️ Official Repository & Impersonation Warning
 
 **This is the only official ZeroClaw repository:**
