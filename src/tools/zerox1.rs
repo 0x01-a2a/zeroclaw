@@ -615,6 +615,8 @@ const DEFAULT_SWAP_WHITELIST: &[&str] = &[
     "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R",
     // WIF
     "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",
+    // BAGS — mainnet
+    "Bags4uLBdNscWBnHmqBozrjSScnEqPx5qZBzLiqnRVN7",
 ];
 
 /// Execute a Jupiter exchange swap via the local node API.
@@ -702,14 +704,14 @@ impl Tool for Zerox1JupiterSwapTool {
                 None => DEFAULT_SWAP_WHITELIST.contains(&mint),
             }
         };
-        if !mint_allowed(&input_mint) {
+        if !mint_allowed(input_mint) {
             return Ok(ToolResult {
                 success: false,
                 output: String::new(),
                 error: Some(format!("input_mint {input_mint} is not in the token whitelist")),
             });
         }
-        if !mint_allowed(&output_mint) {
+        if !mint_allowed(output_mint) {
             return Ok(ToolResult {
                 success: false,
                 output: String::new(),
