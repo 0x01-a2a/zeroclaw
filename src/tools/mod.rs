@@ -729,6 +729,10 @@ pub fn all_tools_with_runtime(
                 api_base.clone(),
                 token.clone(),
             )));
+            tool_arcs.push(Arc::new(zerox1::Zerox1CounterTool::new(
+                api_base.clone(),
+                token.clone(),
+            )));
             tool_arcs.push(Arc::new(zerox1::Zerox1AcceptTool::new(
                 api_base.clone(),
                 token.clone(),
@@ -738,6 +742,10 @@ pub fn all_tools_with_runtime(
                 token.clone(),
             )));
             tool_arcs.push(Arc::new(zerox1::Zerox1DeliverTool::new(
+                api_base.clone(),
+                token.clone(),
+            )));
+            tool_arcs.push(Arc::new(zerox1::Zerox1JupiterSwapTool::new(
                 api_base,
                 token,
             )));

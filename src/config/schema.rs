@@ -9630,6 +9630,7 @@ ws_url = "ws://127.0.0.1:3002"
             mcp: McpConfig::default(),
             model_support_vision: None,
             wasm: WasmConfig::default(),
+            phone: None,
         };
 
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -10005,6 +10006,7 @@ tool_dispatcher = "xml"
             mcp: McpConfig::default(),
             model_support_vision: None,
             wasm: WasmConfig::default(),
+            phone: None,
         };
 
         config.save().await.unwrap();
