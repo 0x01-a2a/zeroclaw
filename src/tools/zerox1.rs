@@ -758,6 +758,163 @@ impl Tool for Zerox1JupiterSwapTool {
     }
 }
 
+// ── Bags Launch ──────────────────────────────────────────────────────────────
+
+/// Launch a new token on Bags.fm via the local node API.
+///
+/// The node handles all signing and on-chain interaction — ZeroClaw only
+/// needs to supply the token metadata. The wallet used is the node's own
+/// Ed25519 identity key (the hot wallet shown during onboarding).
+pub struct Zerox1BagsLaunchTool {
+    api_base: String,
+    token: Option<String>,
+}
+
+impl Zerox1BagsLaunchTool {
+    pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
+        Self {
+            api_base: api_base.into(),
+            token,
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for Zerox1BagsLaunchTool {
+    fn name(&self) -> &str {
+        "bags_launch_token"
+    }
+
+    fn description(&self) -> &str {
+        "Launch a new token on Bags.fm (bags.fm) using the agent's on-chain wallet. \
+         Provide the token name, ticker symbol, and description. Optionally include \
+         social links and an initial SOL buy amount. The node signs and broadcasts \
+         the transaction — no private key handling is required here. \
+         Only use this when the user explicitly asks to launch or create a token."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Full token name, e.g. \"My Cool Token\" (max 100 chars)"
+                },
+                "symbol": {
+                    "type": "string",
+                    "description": "Ticker symbol, ASCII alphanumeric only, e.g. \"MCT\" (max 10 chars)"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Token description shown on Bags.fm (max 1000 chars)"
+                },
+                "image_url": {
+                    "type": "string",
+                    "description": "Optional HTTPS URL to the token logo image"
+                },
+                "website_url": {
+                    "type": "string",
+                    "description": "Optional project website URL"
+                },
+                "twitter_url": {
+                    "type": "string",
+                    "description": "Optional Twitter/X profile URL"
+                },
+                "telegram_url": {
+                    "type": "string",
+                    "description": "Optional Telegram group URL"
+                },
+                "initial_buy_lamports": {
+                    "type": "integer",
+                    "description": "Optional SOL amount in lamports to use for the initial token buy (e.g. 10000000 = 0.01 SOL). Omit or set 0 to skip."
+                }
+            },
+            "required": ["name", "symbol", "description"]
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<ToolResult> {
+        let name = match require_str(&args, "name") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        let symbol = match require_str(&args, "symbol") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        let description = match require_str(&args, "description") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+
+        let mut body = json!({
+            "name": name,
+            "symbol": symbol,
+            "description": description,
+        });
+
+        if let Some(u) = args.get("image_url").and_then(Value::as_str) {
+            body["image_url"] = u.into();
+        }
+        if let Some(u) = args.get("website_url").and_then(Value::as_str) {
+            body["website_url"] = u.into();
+        }
+        if let Some(u) = args.get("twitter_url").and_then(Value::as_str) {
+            body["twitter_url"] = u.into();
+        }
+        if let Some(u) = args.get("telegram_url").and_then(Value::as_str) {
+            body["telegram_url"] = u.into();
+        }
+        if let Some(lamports) = args.get("initial_buy_lamports").and_then(Value::as_u64) {
+            if lamports > 0 {
+                body["initial_buy_lamports"] = lamports.into();
+            }
+        }
+
+        let url = format!("{}/bags/launch", self.api_base);
+        let client = reqwest::Client::new();
+        let mut req = client.post(&url).json(&body);
+
+        if let Some(ref tok) = self.token {
+            req = req.bearer_auth(tok);
+        }
+
+        match req.send().await {
+            Ok(res) => {
+                let status = res.status();
+                if status.is_success() {
+                    let json: Value = res.json().await.unwrap_or(Value::Null);
+                    let token_mint = json.get("token_mint").and_then(Value::as_str).unwrap_or("unknown");
+                    let txid = json.get("txid").and_then(Value::as_str).unwrap_or("unknown");
+                    let ipfs_uri = json.get("ipfs_uri").and_then(Value::as_str).unwrap_or("");
+                    Ok(ToolResult {
+                        success: true,
+                        output: format!(
+                            "Token launched on Bags.fm!\n\
+                             Name:       {name}\n\
+                             Symbol:     {symbol}\n\
+                             Mint:       {token_mint}\n\
+                             Txid:       {txid}\n\
+                             Metadata:   {ipfs_uri}\n\
+                             View on Bags.fm: https://bags.fm/token/{token_mint}"
+                        ),
+                        error: None,
+                    })
+                } else {
+                    let err_text = res.text().await.unwrap_or_default();
+                    Ok(ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(format!("bags_launch_token [{status}]: {err_text}")),
+                    })
+                }
+            }
+            Err(e) => Ok(send_error("bags_launch_token reqwest", e.into())),
+        }
+    }
+}
+
 // ── tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -772,6 +929,7 @@ mod tests {
         assert_eq!(Zerox1AcceptTool::new(api, None).name(), "zerox1_accept");
         assert_eq!(Zerox1RejectTool::new(api, None).name(), "zerox1_reject");
         assert_eq!(Zerox1DeliverTool::new(api, None).name(), "zerox1_deliver");
+        assert_eq!(Zerox1BagsLaunchTool::new(api, None).name(), "bags_launch_token");
     }
 
     #[test]
@@ -783,10 +941,33 @@ mod tests {
             Zerox1AcceptTool::new(api, None).parameters_schema(),
             Zerox1RejectTool::new(api, None).parameters_schema(),
             Zerox1DeliverTool::new(api, None).parameters_schema(),
+            Zerox1BagsLaunchTool::new(api, None).parameters_schema(),
         ] {
             assert_eq!(schema["type"], "object");
             assert!(schema["required"].is_array());
         }
+    }
+
+    #[tokio::test]
+    async fn bags_launch_returns_error_on_missing_name() {
+        let tool = Zerox1BagsLaunchTool::new("http://127.0.0.1:9090", None);
+        let result = tool
+            .execute(json!({ "symbol": "TST", "description": "test" }))
+            .await
+            .unwrap();
+        assert!(!result.success);
+        assert!(result.error.unwrap().contains("name"));
+    }
+
+    #[tokio::test]
+    async fn bags_launch_returns_error_on_missing_symbol() {
+        let tool = Zerox1BagsLaunchTool::new("http://127.0.0.1:9090", None);
+        let result = tool
+            .execute(json!({ "name": "Test Token", "description": "test" }))
+            .await
+            .unwrap();
+        assert!(!result.success);
+        assert!(result.error.unwrap().contains("symbol"));
     }
 
     #[tokio::test]
