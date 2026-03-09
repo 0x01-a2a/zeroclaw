@@ -765,7 +765,7 @@ impl Tool for Zerox1JupiterSwapTool {
 /// Flow:
 ///   1. POST /skill/install-url  — node fetches the SKILL.toml and writes it to disk
 ///   2. POST /agent/reload       — sends SIGTERM; NodeService auto-restarts ZeroClaw
-///                                 with the new skill loaded
+///      with the new skill loaded
 ///
 /// The agent will be briefly unavailable while restarting (~2-3 s).
 pub struct Zerox1SkillInstallTool {
