@@ -750,6 +750,10 @@ pub fn all_tools_with_runtime(
                 token.clone(),
             )));
             tool_arcs.push(Arc::new(zerox1::Zerox1BagsLaunchTool::new(
+                api_base.clone(),
+                token.clone(),
+            )));
+            tool_arcs.push(Arc::new(zerox1::Zerox1SkillInstallTool::new(
                 api_base,
                 token,
             )));

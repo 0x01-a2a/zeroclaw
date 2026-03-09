@@ -758,6 +758,133 @@ impl Tool for Zerox1JupiterSwapTool {
     }
 }
 
+// ── Skill Install ────────────────────────────────────────────────────────────
+
+/// Install a new skill from a public HTTPS URL and hot-reload the agent.
+///
+/// Flow:
+///   1. POST /skill/install-url  — node fetches the SKILL.toml and writes it to disk
+///   2. POST /agent/reload       — sends SIGTERM; NodeService auto-restarts ZeroClaw
+///                                 with the new skill loaded
+///
+/// The agent will be briefly unavailable while restarting (~2-3 s).
+pub struct Zerox1SkillInstallTool {
+    api_base: String,
+    token: Option<String>,
+}
+
+impl Zerox1SkillInstallTool {
+    pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
+        Self { api_base: api_base.into(), token }
+    }
+}
+
+#[async_trait]
+impl Tool for Zerox1SkillInstallTool {
+    fn name(&self) -> &str {
+        "skill_install"
+    }
+
+    fn description(&self) -> &str {
+        "Install a new skill from a public HTTPS URL and restart the agent so the skill \
+         is immediately available. The URL must point to a raw SKILL.toml file (e.g. a \
+         GitHub raw URL). After installation the agent restarts — confirm with the user \
+         before calling this."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Short identifier for the skill, e.g. \"solana-token-scanner\". \
+                                    Alphanumeric, hyphens and underscores only."
+                },
+                "url": {
+                    "type": "string",
+                    "description": "Public HTTPS URL pointing directly to the skill's SKILL.toml \
+                                    (e.g. https://raw.githubusercontent.com/org/repo/main/SKILL.toml)"
+                }
+            },
+            "required": ["name", "url"]
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<ToolResult> {
+        let name = match require_str(&args, "name") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        let url = match require_str(&args, "url") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+
+        let client = reqwest::Client::new();
+
+        // ── Step 1: install the skill ─────────────────────────────────────────
+        let install_url = format!("{}/skill/install-url", self.api_base);
+        let body = json!({ "name": name, "url": url });
+        let mut req = client.post(&install_url).json(&body);
+        if let Some(ref tok) = self.token {
+            req = req.bearer_auth(tok);
+        }
+
+        match req.send().await {
+            Ok(res) if res.status().is_success() => { /* continue to reload */ }
+            Ok(res) => {
+                let status = res.status();
+                let text = res.text().await.unwrap_or_default();
+                return Ok(ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(format!("skill_install: install failed [{status}]: {text}")),
+                });
+            }
+            Err(e) => return Ok(send_error("skill_install: install-url reqwest", e.into())),
+        }
+
+        // ── Step 2: reload the agent ──────────────────────────────────────────
+        let reload_url = format!("{}/agent/reload", self.api_base);
+        let mut req = client.post(&reload_url);
+        if let Some(ref tok) = self.token {
+            req = req.bearer_auth(tok);
+        }
+
+        match req.send().await {
+            Ok(res) if res.status().is_success() || res.status().as_u16() == 204 => {
+                Ok(ToolResult {
+                    success: true,
+                    output: format!(
+                        "Skill '{name}' installed from {url}\n\
+                         Agent is restarting to load the new skill (~3 s). \
+                         Resume this conversation once it's back online."
+                    ),
+                    error: None,
+                })
+            }
+            Ok(res) => {
+                let status = res.status();
+                let text = res.text().await.unwrap_or_default();
+                // Skill was written but reload failed — still a partial success.
+                Ok(ToolResult {
+                    success: false,
+                    output: format!("Skill '{name}' installed but reload failed [{status}]: {text}\n\
+                                     Restart the agent manually to activate it."),
+                    error: Some(format!("reload [{status}]: {text}")),
+                })
+            }
+            Err(e) => Ok(ToolResult {
+                success: false,
+                output: format!("Skill '{name}' installed but reload request failed: {e}\n\
+                                 Restart the agent manually to activate it."),
+                error: Some(e.to_string()),
+            }),
+        }
+    }
+}
+
 // ── Bags Launch ──────────────────────────────────────────────────────────────
 
 /// Launch a new token on Bags.fm via the local node API.
@@ -930,6 +1057,7 @@ mod tests {
         assert_eq!(Zerox1RejectTool::new(api, None).name(), "zerox1_reject");
         assert_eq!(Zerox1DeliverTool::new(api, None).name(), "zerox1_deliver");
         assert_eq!(Zerox1BagsLaunchTool::new(api, None).name(), "bags_launch_token");
+        assert_eq!(Zerox1SkillInstallTool::new(api, None).name(), "skill_install");
     }
 
     #[test]
@@ -942,6 +1070,7 @@ mod tests {
             Zerox1RejectTool::new(api, None).parameters_schema(),
             Zerox1DeliverTool::new(api, None).parameters_schema(),
             Zerox1BagsLaunchTool::new(api, None).parameters_schema(),
+            Zerox1SkillInstallTool::new(api, None).parameters_schema(),
         ] {
             assert_eq!(schema["type"], "object");
             assert!(schema["required"].is_array());
