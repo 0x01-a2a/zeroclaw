@@ -936,9 +936,13 @@ impl Tool for Zerox1BagsLaunchTool {
                     "type": "string",
                     "description": "Token description shown on Bags.fm (max 1000 chars)"
                 },
+                "image_bytes": {
+                    "type": "string",
+                    "description": "Optional base64-encoded image (PNG/JPG/GIF/WebP, max 15 MB). Use this when the user shares an image in the conversation. Mutually exclusive with image_url."
+                },
                 "image_url": {
                     "type": "string",
-                    "description": "Optional HTTPS URL to the token logo image"
+                    "description": "Optional HTTPS URL to the token logo image. Use this when the user provides a URL. Mutually exclusive with image_bytes."
                 },
                 "website_url": {
                     "type": "string",
@@ -981,7 +985,9 @@ impl Tool for Zerox1BagsLaunchTool {
             "description": description,
         });
 
-        if let Some(u) = args.get("image_url").and_then(Value::as_str) {
+        if let Some(b) = args.get("image_bytes").and_then(Value::as_str) {
+            body["image_bytes"] = b.into();
+        } else if let Some(u) = args.get("image_url").and_then(Value::as_str) {
             body["image_url"] = u.into();
         }
         if let Some(u) = args.get("website_url").and_then(Value::as_str) {
