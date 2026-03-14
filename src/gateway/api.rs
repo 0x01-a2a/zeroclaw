@@ -23,6 +23,13 @@ fn extract_bearer_token(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// Verify bearer token against PairingGuard. Returns error response if unauthorized.
+///
+/// H-003 (audit): auth is enforced per-handler via this function rather than via an
+/// axum middleware layer. Every `/api/*` handler calls `require_auth` as its first
+/// statement. A middleware-layer refactor would be more robust against future handler
+/// additions that forget the call, but would require touching all handlers simultaneously
+/// and is deferred under YAGNI until the handler count makes it critical. New handlers
+/// MUST call `require_auth` as their first statement.
 fn require_auth(
     state: &AppState,
     headers: &HeaderMap,

@@ -27,10 +27,8 @@ use futures_util::StreamExt;
 use plugin_zerox1::{InboundEnvelope, Zerox1Client};
 use tokio::sync::mpsc;
 use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::http;
 use uuid::Uuid;
-
-// tokio-tungstenite 0.28 connect_async accepts &str via IntoClientRequest.
-// No url crate dependency needed.
 
 /// ZeroClaw channel backed by a `zerox1-node` process.
 pub struct Zerox1Channel {
@@ -102,18 +100,24 @@ impl Channel for Zerox1Channel {
     async fn listen(&self, tx: mpsc::Sender<ChannelMessage>) -> Result<()> {
         let ws_base = self.client.ws_base();
 
-        let url_str = if let Some(ref tok) = self.token {
-            // Hosted: prefer Authorization header, but tokio-tungstenite's
-            // connect_async doesn't support custom headers easily, so fall
-            // back to the query-param form the node also accepts.
-            format!("{ws_base}/ws/hosted/inbox?token={tok}")
+        // C-002: hosted mode uses Authorization: Bearer header instead of query param
+        // to avoid token leakage in server access logs.
+        let (ws_stream, _) = if let Some(ref tok) = self.token {
+            let url_str = format!("{ws_base}/ws/hosted/inbox");
+            let req = http::Request::builder()
+                .uri(&url_str)
+                .header("Authorization", format!("Bearer {tok}"))
+                .body(())
+                .context("failed to build hosted WS request")?;
+            connect_async(req)
+                .await
+                .context("Failed to connect to zerox1-node hosted WebSocket")?
         } else {
-            format!("{ws_base}/ws/inbox")
+            let url_str = format!("{ws_base}/ws/inbox");
+            connect_async(url_str.as_str())
+                .await
+                .context("Failed to connect to zerox1-node WebSocket")?
         };
-
-        let (ws_stream, _) = connect_async(url_str.as_str())
-            .await
-            .context("Failed to connect to zerox1-node WebSocket")?;
 
         let (_, mut read) = ws_stream.split();
 

@@ -9,6 +9,7 @@ use crate::tools::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::time::Duration;
+use tokio::join;
 
 // ── shared helper ─────────────────────────────────────────────────────────────
 
@@ -314,6 +315,212 @@ phone_tool!(
             Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
             Err(e) => err_result(format!("bridge request failed: {e}")),
         }
+    }
+);
+
+// ── PhoneNotificationsGet ─────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneNotificationsGet,
+    name = "phone_notifications_get",
+    desc = "List active (currently visible) notifications on the device. Requires the Notification \
+            Listener permission granted in Android Settings. Returns app, title, text, and a \
+            key that can be used to reply or dismiss.",
+    schema = serde_json::json!({ "type": "object", "properties": {} }),
+    exec = |self, _args| {
+        match self.get("/phone/notifications").send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneNotificationsReply ───────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneNotificationsReply,
+    name = "phone_notifications_reply",
+    desc = "Send a reply to a notification (e.g. reply to a messaging app notification). \
+            Use the `key` returned by phone_notifications_get. Full and dappstore builds only.",
+    schema = serde_json::json!({
+        "type": "object",
+        "required": ["key", "reply"],
+        "properties": {
+            "key":   { "type": "string", "description": "Notification key from phone_notifications_get" },
+            "reply": { "type": "string", "description": "Reply text to send" }
+        }
+    }),
+    exec = |self, args| {
+        match self.post("/phone/notifications/reply").json(&args).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneNotificationsDismiss ─────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneNotificationsDismiss,
+    name = "phone_notifications_dismiss",
+    desc = "Dismiss (clear) a specific notification by its key. \
+            Use the `key` returned by phone_notifications_get.",
+    schema = serde_json::json!({
+        "type": "object",
+        "required": ["key"],
+        "properties": {
+            "key": { "type": "string", "description": "Notification key from phone_notifications_get" }
+        }
+    }),
+    exec = |self, args| {
+        match self.post("/phone/notifications/dismiss").json(&args).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneCallsPending ─────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneCallsPending,
+    name = "phone_calls_pending",
+    desc = "Check for pending (ringing or in-progress) incoming calls. \
+            Returns caller info. Full build only (requires Call Screening permission).",
+    schema = serde_json::json!({ "type": "object", "properties": {} }),
+    exec = |self, _args| {
+        match self.get("/phone/calls/pending").send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneCallsRespond ─────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneCallsRespond,
+    name = "phone_calls_respond",
+    desc = "Respond to a pending incoming call: accept, reject, or silence it. \
+            Full build only (requires Call Screening permission).",
+    schema = serde_json::json!({
+        "type": "object",
+        "required": ["action"],
+        "properties": {
+            "action": {
+                "type": "string",
+                "description": "accept | reject | silence",
+                "enum": ["accept", "reject", "silence"]
+            }
+        }
+    }),
+    exec = |self, args| {
+        match self.post("/phone/calls/respond").json(&args).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneA11yScreenshot ───────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneA11yScreenshot,
+    name = "phone_a11y_screenshot",
+    desc = "Take a screenshot of the current screen. Returns a base64-encoded JPEG. \
+            Full build only (requires Accessibility Service permission).",
+    schema = serde_json::json!({ "type": "object", "properties": {} }),
+    exec = |self, _args| {
+        match self.get("/phone/a11y/screenshot").send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneA11yTree ─────────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneA11yTree,
+    name = "phone_a11y_tree",
+    desc = "Get the current screen's accessibility UI tree (visible elements, text, resource IDs). \
+            Use this to understand what's on screen before clicking. \
+            Full build only (requires Accessibility Service permission).",
+    schema = serde_json::json!({ "type": "object", "properties": {} }),
+    exec = |self, _args| {
+        match self.get("/phone/a11y/tree").send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneA11yClick ────────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneA11yClick,
+    name = "phone_a11y_click",
+    desc = "Tap a UI element by resource_id or text label. Use after phone_a11y_tree to find \
+            the target element. Full build only (requires Accessibility Service permission).",
+    schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "resource_id": { "type": "string", "description": "Android resource ID of the element (e.g. com.app:id/button)" },
+            "text":        { "type": "string", "description": "Visible text of the element to tap" }
+        }
+    }),
+    exec = |self, args| {
+        match self.post("/phone/a11y/click").json(&args).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneA11yGlobal ───────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneA11yGlobal,
+    name = "phone_a11y_global",
+    desc = "Perform a global accessibility action: back, home, recents, notifications, or \
+            quick_settings. Full build only (requires Accessibility Service permission).",
+    schema = serde_json::json!({
+        "type": "object",
+        "required": ["action"],
+        "properties": {
+            "action": {
+                "type": "string",
+                "description": "back | home | recents | notifications | quick_settings",
+                "enum": ["back", "home", "recents", "notifications", "quick_settings"]
+            }
+        }
+    }),
+    exec = |self, args| {
+        match self.post("/phone/a11y/global").json(&args).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneDeviceInfo ───────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneDeviceInfo,
+    name = "phone_device_info",
+    desc = "Get device context: battery level/charging state, network type (WiFi/mobile/offline), \
+            timezone, and device model. Useful for context-aware agent behaviour.",
+    schema = serde_json::json!({ "type": "object", "properties": {} }),
+    exec = |self, _args| {
+        let f1 = self.get("/phone/battery").send();
+        let f2 = self.get("/phone/device").send();
+        let f3 = self.get("/phone/network").send();
+        let (r1, r2, r3) = join!(f1, f2, f3);
+        let mut parts = Vec::new();
+        if let Ok(r) = r1 { parts.push(r.text().await.unwrap_or_default()); }
+        if let Ok(r) = r2 { parts.push(r.text().await.unwrap_or_default()); }
+        if let Ok(r) = r3 { parts.push(r.text().await.unwrap_or_default()); }
+        ok_result(parts.join("\n"))
     }
 );
 

@@ -682,13 +682,24 @@ pub fn all_tools_with_runtime(
     if let Some(phone_cfg) = root_config.phone.as_ref().filter(|c| c.enabled) {
         let url     = phone_cfg.bridge_url.trim().to_string();
         let secret  = phone_cfg.secret.clone();
-        let timeout = phone_cfg.timeout_secs;
+        // M-002: clamp timeout to a sane range to prevent absurdly large values.
+        let timeout = phone_cfg.timeout_secs.clamp(1, 60);
 
         // MED-12: validate bridge_url is loopback-only to prevent SSRF.
-        let is_loopback = url
-            .trim_start_matches("http://")
-            .starts_with("127.0.0.1")
-            || url.trim_start_matches("http://").starts_with("[::1]");
+        // C-003: use proper URL parsing + IpAddr::is_loopback instead of string prefix match.
+        let is_loopback = {
+            use std::net::IpAddr;
+            url::Url::parse(&url)
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_string))
+                .and_then(|h| {
+                    // strip brackets from IPv6 literal e.g. "[::1]"
+                    let h = h.trim_start_matches('[').trim_end_matches(']');
+                    h.parse::<IpAddr>().ok()
+                })
+                .map(|ip| ip.is_loopback())
+                .unwrap_or(false)
+        };
 
         if url.is_empty() {
             tracing::warn!("phone tools: skipped because bridge_url is empty");
@@ -697,8 +708,12 @@ pub fn all_tools_with_runtime(
                 "phone tools: bridge_url '{}' is not a loopback address — refusing to register tools (SSRF risk)",
                 url
             );
-        } else if secret.is_empty() {
-            tracing::warn!("phone tools: skipped because secret is empty — bridge auth would fail");
+        } else if secret.len() < 16 {
+            // M-003: empty string has len 0, so < 16 covers both empty and too-short secrets.
+            tracing::error!(
+                "phone tools: bridge secret is too short ({} bytes, minimum 16) — skipping registration",
+                secret.len()
+            );
         } else {
             tool_arcs.push(Arc::new(phone::PhoneContactsRead::new(url.clone(), secret.clone(), timeout)));
             tool_arcs.push(Arc::new(phone::PhoneContactsWrite::new(url.clone(), secret.clone(), timeout)));
@@ -712,8 +727,20 @@ pub fn all_tools_with_runtime(
             tool_arcs.push(Arc::new(phone::PhoneClipboardRead::new(url.clone(), secret.clone(), timeout)));
             tool_arcs.push(Arc::new(phone::PhoneClipboardWrite::new(url.clone(), secret.clone(), timeout)));
             tool_arcs.push(Arc::new(phone::PhoneCameraCapture::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneAudioRecord::new(url, secret, timeout)));
-            tracing::info!("phone tools: registered 13 bridge tools");
+            tool_arcs.push(Arc::new(phone::PhoneAudioRecord::new(url.clone(), secret.clone(), timeout)));
+            // Extended tools — work on all flavors; bridge returns CAPABILITY_DISABLED if
+            // the permission was stripped by the flavor manifest.
+            tool_arcs.push(Arc::new(phone::PhoneNotificationsGet::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneNotificationsReply::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneNotificationsDismiss::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneCallsPending::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneCallsRespond::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneA11yScreenshot::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneA11yTree::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneA11yClick::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneA11yGlobal::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneDeviceInfo::new(url, secret, timeout)));
+            tracing::info!("phone tools: registered 25 bridge tools");
         }
     }
 
@@ -754,6 +781,10 @@ pub fn all_tools_with_runtime(
                 token.clone(),
             )));
             tool_arcs.push(Arc::new(zerox1::Zerox1SkillInstallTool::new(
+                api_base.clone(),
+                token.clone(),
+            )));
+            tool_arcs.push(Arc::new(zerox1::Zerox1X402FetchTool::new(
                 api_base,
                 token,
             )));

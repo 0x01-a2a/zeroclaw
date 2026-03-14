@@ -60,6 +60,9 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 # URL encoding for web search
 urlencoding = "2.1"
 
+# URL parsing (SSRF loopback validation in phone bridge, already transitive via reqwest)
+url = "2.5"
+
 # HTML to plain text conversion (web_fetch tool)
 nanohtml2text = "0.2"
 
