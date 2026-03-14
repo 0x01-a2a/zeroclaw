@@ -60,6 +60,12 @@ macro_rules! phone_tool {
                     .post(format!("{}{}", $self.bridge_url, path))
                     .header("X-Bridge-Token", &$self.secret)
             }
+
+            fn put(&$self, path: &str) -> reqwest::RequestBuilder {
+                client($self.timeout_secs)
+                    .put(format!("{}{}", $self.bridge_url, path))
+                    .header("X-Bridge-Token", &$self.secret)
+            }
         }
 
         #[async_trait]
@@ -460,13 +466,15 @@ phone_tool!(
 phone_tool!(
     PhoneA11yClick,
     name = "phone_a11y_click",
-    desc = "Tap a UI element by resource_id or text label. Use after phone_a11y_tree to find \
-            the target element. Full build only (requires Accessibility Service permission).",
+    desc = "Tap the screen at pixel coordinates (x, y). Use phone_a11y_tree or \
+            phone_a11y_screenshot to find the element position first. \
+            Full build only (requires Accessibility Service permission).",
     schema = serde_json::json!({
         "type": "object",
+        "required": ["x", "y"],
         "properties": {
-            "resource_id": { "type": "string", "description": "Android resource ID of the element (e.g. com.app:id/button)" },
-            "text":        { "type": "string", "description": "Visible text of the element to tap" }
+            "x": { "type": "integer", "description": "Horizontal pixel coordinate" },
+            "y": { "type": "integer", "description": "Vertical pixel coordinate" }
         }
     }),
     exec = |self, args| {
@@ -549,6 +557,441 @@ phone_tool!(
             .header("X-Bridge-Token", &self.secret)
             .json(&args);
         match req.send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneContactsUpdate ───────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneContactsUpdate,
+    name = "phone_contacts_update",
+    desc = "Update an existing contact in the device address book by ID. \
+            Use phone_contacts_read to find the contact ID first.",
+    schema = serde_json::json!({
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+            "id":    { "type": "string", "description": "Contact ID from phone_contacts_read" },
+            "name":  { "type": "string", "description": "New display name" },
+            "phone": { "type": "string", "description": "New phone number" }
+        }
+    }),
+    exec = |self, args| {
+        let id   = args["id"].as_str().unwrap_or("").to_string();
+        let path = format!("/phone/contacts/{}", urlencoding::encode(&id));
+        match self.put(&path).json(&args).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneCalendarUpdate ───────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneCalendarUpdate,
+    name = "phone_calendar_update",
+    desc = "Update an existing calendar event by ID. \
+            Use phone_calendar_read to find the event ID first. \
+            dtstart/dtend are Unix epoch milliseconds.",
+    schema = serde_json::json!({
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+            "id":          { "type": "string",  "description": "Event ID from phone_calendar_read" },
+            "title":       { "type": "string",  "description": "New event title" },
+            "description": { "type": "string",  "description": "New event description" },
+            "dtstart":     { "type": "integer", "description": "New start time (ms since epoch)" },
+            "dtend":       { "type": "integer", "description": "New end time (ms since epoch)" }
+        }
+    }),
+    exec = |self, args| {
+        let id   = args["id"].as_str().unwrap_or("").to_string();
+        let path = format!("/phone/calendar/{}", urlencoding::encode(&id));
+        match self.put(&path).json(&args).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneMediaImages ──────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneMediaImages,
+    name = "phone_media_images",
+    desc = "List images stored on the device (most recent first). Returns ID, URI, \
+            file name, date_taken, size_bytes, width, and height. limit defaults to 20.",
+    schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "limit": { "type": "integer", "description": "Max images to return (default 20)", "default": 20 }
+        }
+    }),
+    exec = |self, args| {
+        let limit = args["limit"].as_u64().unwrap_or(20);
+        let path  = format!("/phone/media/images?limit={limit}");
+        match self.get(&path).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneActivity ─────────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneActivity,
+    name = "phone_activity",
+    desc = "Read the device step counter since last reboot. \
+            Requires ACTIVITY_RECOGNITION permission.",
+    schema = serde_json::json!({ "type": "object", "properties": {} }),
+    exec = |self, _args| {
+        match self.get("/phone/activity").send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneImuSnapshot ──────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneImuSnapshot,
+    name = "phone_imu_snapshot",
+    desc = "Take a single IMU snapshot: accelerometer (m/s²) and optional gyroscope (rad/s). \
+            Useful for detecting motion or orientation.",
+    schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "gyroscope": { "type": "boolean", "description": "Include gyroscope readings (default false)", "default": false }
+        }
+    }),
+    exec = |self, args| {
+        let gyro = args["gyroscope"].as_bool().unwrap_or(false);
+        let path = format!("/phone/imu?gyroscope={gyro}");
+        match self.get(&path).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneImuRecord ────────────────────────────────────────────────────────────
+
+pub struct PhoneImuRecord {
+    bridge_url:   String,
+    secret:       String,
+    timeout_secs: u64,
+}
+
+impl PhoneImuRecord {
+    pub fn new(bridge_url: String, secret: String, timeout_secs: u64) -> Self {
+        Self { bridge_url, secret, timeout_secs }
+    }
+}
+
+#[async_trait]
+impl Tool for PhoneImuRecord {
+    fn name(&self) -> &str { "phone_imu_record" }
+    fn description(&self) -> &str {
+        "Record IMU sensor data (accelerometer + optional gyroscope) over a duration. \
+         sample_hz controls sampling rate (10–200 Hz, default 50). \
+         duration_ms controls length (500–30000 ms, default 5000). \
+         Returns an array of timestamped samples."
+    }
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "duration_ms": { "type": "integer", "description": "Recording duration ms (500–30000)", "default": 5000 },
+                "sample_hz":   { "type": "integer", "description": "Sample rate Hz (10–200)", "default": 50 },
+                "gyroscope":   { "type": "boolean", "description": "Include gyroscope (default false)", "default": false }
+            }
+        })
+    }
+    async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
+        let duration_ms = args["duration_ms"].as_u64().unwrap_or(5_000);
+        let extra_secs  = (duration_ms / 1_000) + self.timeout_secs;
+        let req = client(extra_secs)
+            .post(format!("{}/phone/imu/record", self.bridge_url))
+            .header("X-Bridge-Token", &self.secret)
+            .json(&args);
+        match req.send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+}
+
+// ── PhoneAppUsage ─────────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneAppUsage,
+    name = "phone_app_usage",
+    desc = "Get foreground app usage time for the past N days (default 7). \
+            Returns top 20 apps by foreground time. \
+            Requires Usage Access special permission (user must grant in Android Settings).",
+    schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "days": { "type": "integer", "description": "Days to look back (1–30, default 7)", "default": 7 }
+        }
+    }),
+    exec = |self, args| {
+        let days = args["days"].as_u64().unwrap_or(7);
+        let path = format!("/phone/app_usage?days={days}");
+        match self.get(&path).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneAlarmSet ─────────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneAlarmSet,
+    name = "phone_alarm_set",
+    desc = "Set an alarm on the device clock app. hour (0–23) and minute (0–59) are required. \
+            message is an optional alarm label.",
+    schema = serde_json::json!({
+        "type": "object",
+        "required": ["hour", "minute"],
+        "properties": {
+            "hour":    { "type": "integer", "description": "Hour (0–23)" },
+            "minute":  { "type": "integer", "description": "Minute (0–59)" },
+            "message": { "type": "string",  "description": "Optional alarm label" }
+        }
+    }),
+    exec = |self, args| {
+        match self.post("/phone/alarm").json(&args).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneTimezone ─────────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneTimezone,
+    name = "phone_timezone",
+    desc = "Get the device's current timezone: ID (e.g. America/New_York), display name, \
+            UTC offset minutes, and DST active flag.",
+    schema = serde_json::json!({ "type": "object", "properties": {} }),
+    exec = |self, _args| {
+        match self.get("/phone/timezone").send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneWifi ─────────────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneWifi,
+    name = "phone_wifi",
+    desc = "Get current WiFi connection details: enabled state, SSID, IP address, \
+            signal strength (RSSI), link speed, frequency, and connection state.",
+    schema = serde_json::json!({ "type": "object", "properties": {} }),
+    exec = |self, _args| {
+        match self.get("/phone/wifi").send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneCarrier ──────────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneCarrier,
+    name = "phone_carrier",
+    desc = "Get cellular carrier info: operator name, SIM operator, country ISO, \
+            network type, roaming status, and call state.",
+    schema = serde_json::json!({ "type": "object", "properties": {} }),
+    exec = |self, _args| {
+        match self.get("/phone/carrier").send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneBluetooth ────────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneBluetooth,
+    name = "phone_bluetooth",
+    desc = "List paired Bluetooth devices: address, name, and type (classic/le/dual). \
+            Also returns Bluetooth enabled state.",
+    schema = serde_json::json!({ "type": "object", "properties": {} }),
+    exec = |self, _args| {
+        match self.get("/phone/bluetooth").send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneAudioProfileGet ──────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneAudioProfileGet,
+    name = "phone_audio_profile_get",
+    desc = "Read current audio profile: volume levels for all streams (ring, media, alarm, \
+            notification, call), ringer mode (normal/silent/vibrate), and DND mode.",
+    schema = serde_json::json!({ "type": "object", "properties": {} }),
+    exec = |self, _args| {
+        match self.get("/phone/audio/profile").send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneAudioProfileSet ──────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneAudioProfileSet,
+    name = "phone_audio_profile_set",
+    desc = "Set device volume or DND mode. To set volume: provide stream \
+            (ring|media|alarm|notification|call) and volume (0–max). \
+            To set DND: provide dnd_mode (off|priority|alarms|none).",
+    schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "stream":   { "type": "string",  "description": "ring | media | alarm | notification | call" },
+            "volume":   { "type": "integer", "description": "Volume level (0 to stream max)" },
+            "dnd_mode": { "type": "string",  "description": "off | priority | alarms | none" }
+        }
+    }),
+    exec = |self, args| {
+        match self.post("/phone/audio/profile").json(&args).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneVibrate ──────────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneVibrate,
+    name = "phone_vibrate",
+    desc = "Vibrate the device. duration_ms controls length (1–5000 ms, default 300). \
+            amplitude controls intensity (-1 for device default, 1–255 for explicit).",
+    schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "duration_ms": { "type": "integer", "description": "Duration in ms (1–5000)", "default": 300 },
+            "amplitude":   { "type": "integer", "description": "-1 for default, 1–255 for explicit", "default": -1 }
+        }
+    }),
+    exec = |self, args| {
+        match self.post("/phone/vibrate").json(&args).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneNotificationsHistory ─────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneNotificationsHistory,
+    name = "phone_notifications_history",
+    desc = "Read the notification history log (recently dismissed/posted notifications). \
+            Requires Notification Listener permission.",
+    schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "limit": { "type": "integer", "description": "Max entries to return (default 20)", "default": 20 }
+        }
+    }),
+    exec = |self, args| {
+        let limit = args["limit"].as_u64().unwrap_or(20);
+        let path  = format!("/phone/notifications/history?limit={limit}");
+        match self.get(&path).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneCallsHistory ─────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneCallsHistory,
+    name = "phone_calls_history",
+    desc = "Read the call screening history (recent calls handled by the agent). \
+            Full build only (requires Call Screening permission).",
+    schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "limit": { "type": "integer", "description": "Max entries to return (default 20)", "default": 20 }
+        }
+    }),
+    exec = |self, args| {
+        let limit = args["limit"].as_u64().unwrap_or(20);
+        let path  = format!("/phone/calls/history?limit={limit}");
+        match self.get(&path).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneA11yAction ───────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneA11yAction,
+    name = "phone_a11y_action",
+    desc = "Perform a named accessibility action on a UI element by its Android resource viewId. \
+            Use phone_a11y_tree to find viewIds. Common actions: 'click', 'long_click', \
+            'focus', 'scroll_forward', 'scroll_backward', 'copy', 'paste', 'cut', 'dismiss'. \
+            Optionally supply text for SET_TEXT action. Full build only.",
+    schema = serde_json::json!({
+        "type": "object",
+        "required": ["viewId", "action"],
+        "properties": {
+            "viewId": { "type": "string", "description": "Android resource ID from phone_a11y_tree (e.g. com.app:id/button)" },
+            "action": { "type": "string", "description": "Action name: click | long_click | focus | scroll_forward | scroll_backward | copy | paste | cut | dismiss" },
+            "text":   { "type": "string", "description": "Text value for set_text action" }
+        }
+    }),
+    exec = |self, args| {
+        match self.post("/phone/a11y/action").json(&args).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneA11yVision ───────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneA11yVision,
+    name = "phone_a11y_vision",
+    desc = "Capture a screenshot and analyse it with Gemini Vision. Returns a structured \
+            JSON response with 'analysis' (text description) and 'actions' (suggested \
+            accessibility actions to take). Optionally includes the UI tree for richer \
+            context. Rate-limited to 1 call per 3 seconds. Full build only.",
+    schema = serde_json::json!({
+        "type": "object",
+        "required": ["prompt"],
+        "properties": {
+            "prompt":       { "type": "string",  "description": "What to analyse or do on screen" },
+            "include_tree": { "type": "boolean", "description": "Include accessibility tree context (default false)", "default": false }
+        }
+    }),
+    exec = |self, args| {
+        match self.post("/phone/a11y/vision").json(&args).send().await {
             Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
             Err(e) => err_result(format!("bridge request failed: {e}")),
         }

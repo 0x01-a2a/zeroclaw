@@ -739,8 +739,28 @@ pub fn all_tools_with_runtime(
             tool_arcs.push(Arc::new(phone::PhoneA11yTree::new(url.clone(), secret.clone(), timeout)));
             tool_arcs.push(Arc::new(phone::PhoneA11yClick::new(url.clone(), secret.clone(), timeout)));
             tool_arcs.push(Arc::new(phone::PhoneA11yGlobal::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneDeviceInfo::new(url, secret, timeout)));
-            tracing::info!("phone tools: registered 25 bridge tools");
+            tool_arcs.push(Arc::new(phone::PhoneDeviceInfo::new(url.clone(), secret.clone(), timeout)));
+            // Gap-fill tools — bridge endpoints that now have ZeroClaw wrappers
+            tool_arcs.push(Arc::new(phone::PhoneContactsUpdate::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneCalendarUpdate::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneMediaImages::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneActivity::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneImuSnapshot::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneImuRecord::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneAppUsage::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneAlarmSet::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneTimezone::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneWifi::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneCarrier::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneBluetooth::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneAudioProfileGet::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneAudioProfileSet::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneVibrate::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneNotificationsHistory::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneCallsHistory::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneA11yAction::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneA11yVision::new(url, secret, timeout)));
+            tracing::info!("phone tools: registered 42 bridge tools");
         }
     }
 
