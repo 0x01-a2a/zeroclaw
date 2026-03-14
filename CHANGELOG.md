@@ -5,7 +5,7 @@ All notable changes to ZeroClaw will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.13] - 2026-03-14
 
 ### Security
 - **Legacy XOR cipher migration**: The `enc:` prefix (XOR cipher) is now deprecated. 
@@ -67,4 +67,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Workspace escape prevention
 - Forbidden system path protection (`/etc`, `/root`, `~/.ssh`)
 
+[0.1.13]: https://github.com/zeroclaw-labs/zeroclaw/releases/tag/v0.1.13
 [0.1.0]: https://github.com/theonlyhennygod/zeroclaw/releases/tag/v0.1.0
