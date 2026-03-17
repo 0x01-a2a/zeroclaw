@@ -759,8 +759,12 @@ pub fn all_tools_with_runtime(
             tool_arcs.push(Arc::new(phone::PhoneNotificationsHistory::new(url.clone(), secret.clone(), timeout)));
             tool_arcs.push(Arc::new(phone::PhoneCallsHistory::new(url.clone(), secret.clone(), timeout)));
             tool_arcs.push(Arc::new(phone::PhoneA11yAction::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneA11yVision::new(url, secret, timeout)));
-            tracing::info!("phone tools: registered 42 bridge tools");
+            tool_arcs.push(Arc::new(phone::PhoneA11yVision::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneHealthRead::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneWearableScan::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneWearableRead::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneRecoveryStatus::new(url, secret, timeout)));
+            tracing::info!("phone tools: registered 46 bridge tools");
         }
     }
 
@@ -797,6 +801,14 @@ pub fn all_tools_with_runtime(
                 token.clone(),
             )));
             tool_arcs.push(Arc::new(zerox1::Zerox1BagsLaunchTool::new(
+                api_base.clone(),
+                token.clone(),
+            )));
+            tool_arcs.push(Arc::new(zerox1::Zerox1LaunchlabBuyTool::new(
+                api_base.clone(),
+                token.clone(),
+            )));
+            tool_arcs.push(Arc::new(zerox1::Zerox1LaunchlabSellTool::new(
                 api_base.clone(),
                 token.clone(),
             )));

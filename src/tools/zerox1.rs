@@ -1074,6 +1074,197 @@ impl Tool for Zerox1BagsLaunchTool {
     }
 }
 
+// ── Raydium LaunchLab bonding-curve tools ─────────────────────────────────────
+
+/// Buy tokens on the Raydium LaunchLab bonding curve.
+/// Earns a 0.1% share fee on every trade routed through the node (atomic, on-chain).
+pub struct Zerox1LaunchlabBuyTool {
+    api_base: String,
+    token: Option<String>,
+}
+
+impl Zerox1LaunchlabBuyTool {
+    pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
+        Self { api_base: api_base.into(), token }
+    }
+}
+
+#[async_trait]
+impl Tool for Zerox1LaunchlabBuyTool {
+    fn name(&self) -> &str { "launchlab_buy_token" }
+
+    fn description(&self) -> &str {
+        "Buy tokens from a Raydium LaunchLab bonding curve using the agent's on-chain wallet. \
+         Specify the token mint address and the amount of SOL (in lamports) to spend. \
+         Only use this for tokens still on the LaunchLab bonding curve (not yet graduated to an AMM pool). \
+         For graduated tokens, use the swap tool instead."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "mint": {
+                    "type": "string",
+                    "description": "Token mint address (base58) to buy from the bonding curve"
+                },
+                "amount_in": {
+                    "type": "integer",
+                    "description": "Amount of SOL to spend in lamports (1 SOL = 1_000_000_000 lamports)"
+                },
+                "minimum_amount_out": {
+                    "type": "integer",
+                    "description": "Minimum tokens to receive (optional, 0 = no slippage protection)"
+                }
+            },
+            "required": ["mint", "amount_in"]
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<ToolResult> {
+        let mint = require_str(&args, "mint").map_err(|e| anyhow::anyhow!(e))?;
+        let amount_in = args.get("amount_in").and_then(Value::as_u64)
+            .ok_or_else(|| anyhow::anyhow!("amount_in is required and must be a positive integer"))?;
+        let minimum_amount_out = args.get("minimum_amount_out").and_then(Value::as_u64);
+
+        let url = format!("{}/trade/launchlab/buy", self.api_base);
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_default();
+
+        let mut body = json!({ "mint": mint, "amount_in": amount_in });
+        if let Some(min_out) = minimum_amount_out {
+            body["minimum_amount_out"] = min_out.into();
+        }
+
+        let mut req = client.post(&url).json(&body);
+        if let Some(ref tok) = self.token {
+            req = req.bearer_auth(tok);
+        }
+
+        match req.send().await {
+            Ok(res) => {
+                let status = res.status();
+                if status.is_success() {
+                    let json: Value = res.json().await.unwrap_or(Value::Null);
+                    let txid = json.get("txid").and_then(Value::as_str).unwrap_or("unknown");
+                    let fee_rate = json.get("share_fee_rate").and_then(Value::as_u64).unwrap_or(0);
+                    Ok(ToolResult {
+                        success: true,
+                        output: format!(
+                            "LaunchLab buy executed.\nMint:          {mint}\nAmount in:     {amount_in} lamports\nTxid:          {txid}\nShare fee:     {fee_rate} (0.1% = 1000)"
+                        ),
+                        error: None,
+                    })
+                } else {
+                    let err_text = res.text().await.unwrap_or_default();
+                    Ok(ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(format!("launchlab_buy_token [{status}]: {err_text}")),
+                    })
+                }
+            }
+            Err(e) => Ok(send_error("launchlab_buy_token reqwest", e.into())),
+        }
+    }
+}
+
+/// Sell tokens back to the Raydium LaunchLab bonding curve.
+pub struct Zerox1LaunchlabSellTool {
+    api_base: String,
+    token: Option<String>,
+}
+
+impl Zerox1LaunchlabSellTool {
+    pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
+        Self { api_base: api_base.into(), token }
+    }
+}
+
+#[async_trait]
+impl Tool for Zerox1LaunchlabSellTool {
+    fn name(&self) -> &str { "launchlab_sell_token" }
+
+    fn description(&self) -> &str {
+        "Sell tokens back to a Raydium LaunchLab bonding curve using the agent's on-chain wallet. \
+         Specify the token mint address and the amount of tokens (in base units) to sell. \
+         Only use this for tokens still on the LaunchLab bonding curve. \
+         For graduated tokens, use the swap tool instead."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "mint": {
+                    "type": "string",
+                    "description": "Token mint address (base58) to sell back to the bonding curve"
+                },
+                "amount_in": {
+                    "type": "integer",
+                    "description": "Amount of tokens to sell (in base units / smallest denomination)"
+                },
+                "minimum_amount_out": {
+                    "type": "integer",
+                    "description": "Minimum SOL lamports to receive (optional, 0 = no slippage protection)"
+                }
+            },
+            "required": ["mint", "amount_in"]
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<ToolResult> {
+        let mint = require_str(&args, "mint").map_err(|e| anyhow::anyhow!(e))?;
+        let amount_in = args.get("amount_in").and_then(Value::as_u64)
+            .ok_or_else(|| anyhow::anyhow!("amount_in is required and must be a positive integer"))?;
+        let minimum_amount_out = args.get("minimum_amount_out").and_then(Value::as_u64);
+
+        let url = format!("{}/trade/launchlab/sell", self.api_base);
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_default();
+
+        let mut body = json!({ "mint": mint, "amount_in": amount_in });
+        if let Some(min_out) = minimum_amount_out {
+            body["minimum_amount_out"] = min_out.into();
+        }
+
+        let mut req = client.post(&url).json(&body);
+        if let Some(ref tok) = self.token {
+            req = req.bearer_auth(tok);
+        }
+
+        match req.send().await {
+            Ok(res) => {
+                let status = res.status();
+                if status.is_success() {
+                    let json: Value = res.json().await.unwrap_or(Value::Null);
+                    let txid = json.get("txid").and_then(Value::as_str).unwrap_or("unknown");
+                    let fee_rate = json.get("share_fee_rate").and_then(Value::as_u64).unwrap_or(0);
+                    Ok(ToolResult {
+                        success: true,
+                        output: format!(
+                            "LaunchLab sell executed.\nMint:          {mint}\nAmount in:     {amount_in} tokens\nTxid:          {txid}\nShare fee:     {fee_rate} (0.1% = 1000)"
+                        ),
+                        error: None,
+                    })
+                } else {
+                    let err_text = res.text().await.unwrap_or_default();
+                    Ok(ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(format!("launchlab_sell_token [{status}]: {err_text}")),
+                    })
+                }
+            }
+            Err(e) => Ok(send_error("launchlab_sell_token reqwest", e.into())),
+        }
+    }
+}
+
 // ── x402 HTTP fetch with auto-pay ────────────────────────────────────────────
 
 // H-001: Global x402 payment rate limiter: max 5 payments per 60 seconds.

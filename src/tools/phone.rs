@@ -973,6 +973,124 @@ phone_tool!(
     }
 );
 
+// ── PhoneHealthRead ───────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneHealthRead,
+    name = "phone_health_read",
+    desc = "Read health data from Android Health Connect (aggregated from wearables, fitness apps, and the phone itself). \
+            Returns steps, heart rate, HRV, sleep stages, calories burned, oxygen saturation, and weight.",
+    schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "types": {
+                "type": "string",
+                "description": "Comma-separated types: steps, heart_rate, hrv, sleep, calories, oxygen_saturation, weight",
+                "default": "steps,heart_rate,sleep,calories"
+            },
+            "days": {
+                "type": "integer",
+                "description": "Number of past days to query (1–90)",
+                "default": 7
+            }
+        }
+    }),
+    exec = |self, args| {
+        let types = args["types"].as_str().unwrap_or("steps,heart_rate,sleep,calories");
+        let days  = args["days"].as_u64().unwrap_or(7);
+        let path  = format!("/phone/health?types={}&days={}", urlencoding::encode(types), days);
+        match self.get(&path).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneWearableScan ─────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneWearableScan,
+    name = "phone_wearable_scan",
+    desc = "Scan for nearby Bluetooth LE wearables advertising standard health profiles \
+            (heart rate monitor, glucose meter, CGM, smart scale, running pod, battery). \
+            Returns a list of discovered devices with address, name, RSSI, and services.",
+    schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "duration_ms": {
+                "type": "integer",
+                "description": "Scan duration in milliseconds (2000–15000)",
+                "default": 8000
+            }
+        }
+    }),
+    exec = |self, args| {
+        let duration_ms = args["duration_ms"].as_u64().unwrap_or(8000);
+        let path = format!("/phone/wearables/scan?duration_ms={duration_ms}");
+        match self.get(&path).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneWearableRead ─────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneWearableRead,
+    name = "phone_wearable_read",
+    desc = "Connect to a specific Bluetooth LE wearable and read one health service characteristic. \
+            Use phone_wearable_scan first to discover device addresses. \
+            Supported services: heart_rate, battery, body_composition, running_speed_cadence, glucose, cgm.",
+    schema = serde_json::json!({
+        "type": "object",
+        "required": ["device", "service"],
+        "properties": {
+            "device":  {
+                "type": "string",
+                "description": "BLE device MAC address (e.g. AA:BB:CC:DD:EE:FF)"
+            },
+            "service": {
+                "type": "string",
+                "description": "heart_rate | battery | body_composition | running_speed_cadence | glucose | cgm"
+            }
+        }
+    }),
+    exec = |self, args| {
+        let device  = args["device"].as_str().unwrap_or("");
+        let service = args["service"].as_str().unwrap_or("");
+        let path = format!(
+            "/phone/wearables/read?device={}&service={}",
+            urlencoding::encode(device),
+            urlencoding::encode(service),
+        );
+        match self.get(&path).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneRecoveryStatus ───────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneRecoveryStatus,
+    name = "phone_recovery_status",
+    desc = "Compute a sleep + recovery readiness score (0-100) from the last sleep session, \
+            HRV, and resting heart rate vs 30-day baselines. Returns score, label \
+            (Optimal/Good/Fair/Poor), per-component scores, and actionable insights.",
+    schema = serde_json::json!({
+        "type": "object",
+        "properties": {}
+    }),
+    exec = |self, _args| {
+        match self.get("/phone/recovery").send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
 // ── PhoneA11yVision ───────────────────────────────────────────────────────────
 
 phone_tool!(
