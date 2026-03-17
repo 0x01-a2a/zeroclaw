@@ -812,6 +812,10 @@ pub fn all_tools_with_runtime(
                 api_base.clone(),
                 token.clone(),
             )));
+            tool_arcs.push(Arc::new(zerox1::Zerox1CpmmCreatePoolTool::new(
+                api_base.clone(),
+                token.clone(),
+            )));
             tool_arcs.push(Arc::new(zerox1::Zerox1SkillInstallTool::new(
                 api_base.clone(),
                 token.clone(),

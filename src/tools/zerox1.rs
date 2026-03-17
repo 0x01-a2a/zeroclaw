@@ -1265,6 +1265,141 @@ impl Tool for Zerox1LaunchlabSellTool {
     }
 }
 
+// ── Raydium CPMM pool creation ────────────────────────────────────────────────
+
+/// Create a Raydium CPMM liquidity pool for a token pair.
+pub struct Zerox1CpmmCreatePoolTool {
+    api_base: String,
+    token: Option<String>,
+}
+
+impl Zerox1CpmmCreatePoolTool {
+    pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
+        Self { api_base: api_base.into(), token }
+    }
+}
+
+#[async_trait]
+impl Tool for Zerox1CpmmCreatePoolTool {
+    fn name(&self) -> &str { "cpmm_create_pool" }
+
+    fn description(&self) -> &str {
+        "Create a Raydium CPMM (Constant Product) liquidity pool for a token pair using the \
+         agent's on-chain wallet. Use this after launching a token on Bags to establish a \
+         trading market. Requires ~0.15 SOL for pool creation fee plus initial liquidity. \
+         The creator earns LP fees on all swaps proportional to their pool share. \
+         mint_a and mint_b will be sorted canonically by the node. \
+         amount_a/amount_b are in base units (lamports for SOL, smallest unit for tokens). \
+         open_time is a Unix timestamp (0 = trading opens immediately). \
+         fee_config_index selects the Raydium fee tier (0 = 0.25%, default)."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "mint_a": {
+                    "type": "string",
+                    "description": "First token mint address (e.g. newly launched Bags token)"
+                },
+                "mint_b": {
+                    "type": "string",
+                    "description": "Second token mint (e.g. WSOL So11111111111111111111111111111111111111112 or USDC)"
+                },
+                "amount_a": {
+                    "type": "integer",
+                    "description": "Initial liquidity for mint_a in base units"
+                },
+                "amount_b": {
+                    "type": "integer",
+                    "description": "Initial liquidity for mint_b in base units"
+                },
+                "open_time": {
+                    "type": "integer",
+                    "description": "Unix timestamp when swapping opens (0 = immediately, default: 0)"
+                },
+                "fee_config_index": {
+                    "type": "integer",
+                    "description": "Raydium fee tier index (0 = 0.25% default)"
+                }
+            },
+            "required": ["mint_a", "mint_b", "amount_a", "amount_b"]
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<ToolResult> {
+        let mint_a = match require_str(&args, "mint_a") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        let mint_b = match require_str(&args, "mint_b") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        let amount_a = match args.get("amount_a").and_then(Value::as_u64) {
+            Some(v) => v,
+            None => return Ok(ToolResult { success: false, output: String::new(), error: Some("missing required integer field `amount_a`".into()) }),
+        };
+        let amount_b = match args.get("amount_b").and_then(Value::as_u64) {
+            Some(v) => v,
+            None => return Ok(ToolResult { success: false, output: String::new(), error: Some("missing required integer field `amount_b`".into()) }),
+        };
+        let open_time = args.get("open_time").and_then(Value::as_u64);
+        let fee_config_index = args.get("fee_config_index").and_then(Value::as_u64);
+
+        let url = format!("{}/trade/cpmm/create-pool", self.api_base);
+        let mut body = json!({
+            "mint_a": mint_a,
+            "mint_b": mint_b,
+            "amount_a": amount_a,
+            "amount_b": amount_b,
+        });
+        if let Some(t) = open_time {
+            body["open_time"] = t.into();
+        }
+        if let Some(i) = fee_config_index {
+            body["fee_config_index"] = i.into();
+        }
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .unwrap_or_default();
+        let mut req = client.post(&url).json(&body);
+        if let Some(ref tok) = self.token {
+            req = req.bearer_auth(tok);
+        }
+
+        match req.send().await {
+            Ok(res) => {
+                let status = res.status();
+                if status.is_success() {
+                    let json: Value = res.json().await.unwrap_or(Value::Null);
+                    let txid = json.get("txid").and_then(Value::as_str).unwrap_or("unknown");
+                    let pool_id = json.get("pool_id").and_then(Value::as_str).unwrap_or("unknown");
+                    let lp_mint = json.get("lp_mint").and_then(Value::as_str).unwrap_or("unknown");
+                    let fee_cfg = json.get("fee_config_id").and_then(Value::as_str).unwrap_or("unknown");
+                    Ok(ToolResult {
+                        success: true,
+                        output: format!(
+                            "CPMM pool created.\nPool ID:       {pool_id}\nLP mint:       {lp_mint}\nFee config:    {fee_cfg}\nTxid:          {txid}"
+                        ),
+                        error: None,
+                    })
+                } else {
+                    let err_text = res.text().await.unwrap_or_default();
+                    Ok(ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(format!("cpmm_create_pool [{status}]: {err_text}")),
+                    })
+                }
+            }
+            Err(e) => Ok(send_error("cpmm_create_pool reqwest", e.into())),
+        }
+    }
+}
+
 // ── x402 HTTP fetch with auto-pay ────────────────────────────────────────────
 
 // H-001: Global x402 payment rate limiter: max 5 payments per 60 seconds.
