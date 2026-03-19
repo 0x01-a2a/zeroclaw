@@ -28,9 +28,13 @@ use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64_STD;
 use base64::Engine as _;
 use serde_json::{json, Value};
+use std::time::Duration;
 
 const ELEVENLABS_TTS_URL: &str = "https://api.elevenlabs.io/v1/text-to-speech";
-const MAX_TEXT_LEN: usize = 5_000;
+/// ElevenLabs enforces a 5 000 *character* (not byte) limit per request.
+const MAX_TEXT_CHARS: usize = 5_000;
+/// Reasonable wall-clock cap for a single TTS call (large texts can be slow).
+const REQUEST_TIMEOUT_SECS: u64 = 60;
 
 pub struct ElevenLabsTtsTool {
     api_key: String,
@@ -93,8 +97,11 @@ impl Tool for ElevenLabsTtsTool {
         if text.is_empty() {
             bail!("text cannot be empty");
         }
-        if text.len() > MAX_TEXT_LEN {
-            bail!("text exceeds maximum length of {MAX_TEXT_LEN} characters");
+        let char_count = text.chars().count();
+        if char_count > MAX_TEXT_CHARS {
+            bail!(
+                "text is {char_count} characters — exceeds the {MAX_TEXT_CHARS}-character limit"
+            );
         }
 
         let voice_id = args["voice_id"]
@@ -123,7 +130,9 @@ impl Tool for ElevenLabsTtsTool {
             }
         });
 
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+            .build()?;
         let response = client
             .post(&url)
             .header("xi-api-key", &self.api_key)
@@ -140,15 +149,21 @@ impl Tool for ElevenLabsTtsTool {
         }
 
         let audio_bytes = response.bytes().await?;
+        let size_bytes = audio_bytes.len();
         let b64 = BASE64_STD.encode(&audio_bytes);
+
+        let result = json!({
+            "content_type": "audio/mpeg",
+            "encoding": "base64",
+            "data": b64,
+            "voice_id": voice_id,
+            "model_id": self.model_id,
+            "size_bytes": size_bytes,
+        });
 
         Ok(ToolResult {
             success: true,
-            output: format!(
-                "audio/mpeg;base64,{b64}\nvoice_id={voice_id} model={} bytes={}",
-                self.model_id,
-                audio_bytes.len()
-            ),
+            output: result.to_string(),
             error: None,
         })
     }
@@ -202,5 +217,38 @@ mod tests {
         let result = tool.execute(json!({"text": "hello"})).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("voice_id"));
+    }
+
+    #[tokio::test]
+    async fn text_over_char_limit_returns_error() {
+        let tool = ElevenLabsTtsTool::new(
+            "test-key".to_string(),
+            "default-voice".to_string(),
+            "eleven_multilingual_v2".to_string(),
+        );
+        // 5001 ASCII chars — over limit
+        let long_text = "a".repeat(MAX_TEXT_CHARS + 1);
+        let result = tool.execute(json!({"text": long_text})).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("character"));
+    }
+
+    #[tokio::test]
+    async fn unicode_text_at_char_limit_accepted() {
+        // "à" is 2 bytes but 1 char — 5000 "à" should pass the char check
+        // (it will fail later at the HTTP call with a fake key, but not on validation)
+        let tool = ElevenLabsTtsTool::new(
+            "test-key".to_string(),
+            "default-voice".to_string(),
+            "eleven_multilingual_v2".to_string(),
+        );
+        let text = "à".repeat(MAX_TEXT_CHARS);
+        assert_eq!(text.chars().count(), MAX_TEXT_CHARS);
+        // The char-limit validation must pass (error comes from HTTP, not validation)
+        let result = tool.execute(json!({"text": text})).await;
+        // reqwest will fail because "test-key" is invalid — but NOT with a char-limit error
+        if let Err(e) = result {
+            assert!(!e.to_string().contains("character"), "unexpected char-limit error: {e}");
+        }
     }
 }
