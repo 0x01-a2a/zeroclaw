@@ -1116,13 +1116,11 @@ pub(crate) async fn run_tool_call_loop(
                 .map(|ctx| ctx.reply_target.clone())
         });
 
-    let max_iterations = if max_tool_iterations == 0 {
+    let max_iterations = (if max_tool_iterations == 0 {
         DEFAULT_MAX_TOOL_ITERATIONS
     } else {
         max_tool_iterations
-    }
-    .max(1)
-    .min(100);
+    }).clamp(1, 100);
 
     let tool_specs: Vec<crate::tools::ToolSpec> = tools_registry
         .iter()
