@@ -171,7 +171,7 @@ pub async fn handle_v1_chat_completions(
         .and_then(|auth| auth.strip_prefix("Bearer "))
         .unwrap_or("")
         .trim();
-    let has_valid_pairing_token = !token.is_empty() && state.pairing.is_authenticated(token);
+    let has_valid_pairing_token = !token.is_empty() && state.pairing.is_authenticated(token).await;
     let is_loopback_request =
         super::is_loopback_request(Some(peer_addr), &headers, state.trust_forwarded_headers);
 
@@ -604,7 +604,7 @@ pub async fn handle_v1_models(
         .and_then(|auth| auth.strip_prefix("Bearer "))
         .unwrap_or("")
         .trim();
-    let has_valid_pairing_token = !token.is_empty() && state.pairing.is_authenticated(token);
+    let has_valid_pairing_token = !token.is_empty() && state.pairing.is_authenticated(token).await;
     let is_loopback_request =
         super::is_loopback_request(Some(peer_addr), &headers, state.trust_forwarded_headers);
 

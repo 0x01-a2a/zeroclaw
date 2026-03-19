@@ -87,6 +87,9 @@ impl SecretStore {
         if let Some(hex_str) = value.strip_prefix("enc2:") {
             self.decrypt_chacha20(hex_str)
         } else if let Some(hex_str) = value.strip_prefix("enc:") {
+            tracing::warn!(
+                "secret uses legacy XOR encryption (enc: prefix) — call decrypt_and_migrate() to upgrade to AES-GCM"
+            );
             self.decrypt_legacy_xor(hex_str)
         } else {
             Ok(value.to_string())
@@ -217,8 +220,15 @@ impl SecretStore {
 
             #[cfg(windows)]
             {
-                // On Windows, use icacls to restrict permissions to current user only
+                // On Windows, use icacls to restrict permissions to current user only.
+                // L-006 (audit fix): validate USERNAME before use to prevent argument injection.
                 let username = std::env::var("USERNAME").unwrap_or_default();
+                let username = username.trim().to_string();
+                if !username.is_empty() && !is_valid_windows_username(&username) {
+                    return Err(anyhow::anyhow!(
+                        "USERNAME environment variable contains invalid characters: '{username}'"
+                    ));
+                }
                 let Some(grant_arg) = build_windows_icacls_grant_arg(&username) else {
                     tracing::warn!(
                         "USERNAME environment variable is empty; \
@@ -282,11 +292,30 @@ fn hex_encode(data: &[u8]) -> String {
     s
 }
 
-/// Build the `/grant` argument for `icacls` using a normalized username.
-/// Returns `None` when the username is empty or whitespace-only.
+/// Validate a Windows username before passing it to `icacls`.
+///
+/// L-006 (audit fix): rejects characters that could be used for argument
+/// injection. Allows alphanumeric, hyphen, underscore, backslash (for
+/// `DOMAIN\user`), dot, and space. Rejects empty strings and any other
+/// characters to prevent shell-level injection.
+fn is_valid_windows_username(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 256
+        && name.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || matches!(c, '-' | '_' | '\\' | '.' | ' ')
+        })
+}
+
+/// Build the `/grant` argument for `icacls` using a validated username.
+/// Returns `None` when the username is empty, whitespace-only, or contains
+/// invalid characters that could enable argument injection.
 fn build_windows_icacls_grant_arg(username: &str) -> Option<String> {
     let normalized = username.trim();
     if normalized.is_empty() {
+        return None;
+    }
+    if !is_valid_windows_username(normalized) {
         return None;
     }
     Some(format!("{normalized}:F"))

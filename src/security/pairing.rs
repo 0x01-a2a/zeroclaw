@@ -8,11 +8,11 @@
 // Already-paired tokens are persisted in config so restarts don't require
 // re-pairing.
 
-use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::Mutex;
 
 /// Maximum failed pairing attempts before lockout.
 const MAX_PAIR_ATTEMPTS: u32 = 5;
@@ -75,7 +75,10 @@ pub struct PairedDevice {
 /// Bearer tokens are stored as SHA-256 hashes to prevent plaintext exposure
 /// in config files. When a new token is generated, the plaintext is returned
 /// to the client once, and only the hash is retained.
-// TODO: I've just made this work with parking_lot but it should use either flume or tokio's async mutexes
+///
+/// L-001 (audit fix): internal state is protected by `tokio::sync::Mutex` to
+/// avoid blocking tokio worker threads. Public async methods use `.lock().await`;
+/// the `try_pair_blocking` helper (called via `spawn_blocking`) uses `.blocking_lock()`.
 #[derive(Debug, Clone)]
 pub struct PairingGuard {
     /// Whether pairing is required at all.
@@ -129,8 +132,15 @@ impl PairingGuard {
     }
 
     /// The one-time pairing code (only set when no tokens exist yet).
-    pub fn pairing_code(&self) -> Option<String> {
-        self.pairing_code.lock().clone()
+    pub async fn pairing_code(&self) -> Option<String> {
+        self.pairing_code.lock().await.clone()
+    }
+
+    /// Synchronous variant of `pairing_code()` for use in non-async contexts
+    /// (e.g. constructors called before a tokio runtime is available).
+    /// Must NOT be called from inside an async task — use `pairing_code().await` instead.
+    pub fn pairing_code_blocking(&self) -> Option<String> {
+        self.pairing_code.blocking_lock().clone()
     }
 
     /// Whether pairing is required at all.
@@ -138,13 +148,15 @@ impl PairingGuard {
         self.require_pairing
     }
 
+    /// Synchronous pairing attempt — must be called inside `spawn_blocking`.
+    /// Uses `blocking_lock()` since tokio::sync::Mutex is not available synchronously.
     fn try_pair_blocking(&self, code: &str, client_id: &str) -> Result<Option<String>, u64> {
         let client_id = normalize_client_key(client_id);
         let now = Instant::now();
 
         // Periodic sweep + lockout check
         {
-            let mut guard = self.failed_attempts.lock();
+            let mut guard = self.failed_attempts.blocking_lock();
             let (ref mut map, ref mut last_sweep) = *guard;
 
             // Sweep stale entries on interval
@@ -167,21 +179,21 @@ impl PairingGuard {
         }
 
         {
-            let mut pairing_code = self.pairing_code.lock();
+            let mut pairing_code = self.pairing_code.blocking_lock();
             if let Some(ref expected) = *pairing_code {
                 if constant_time_eq(code.trim(), expected.trim()) {
                     // Reset failed attempts for this client on success
                     {
-                        let mut guard = self.failed_attempts.lock();
+                        let mut guard = self.failed_attempts.blocking_lock();
                         guard.0.remove(&client_id);
                     }
                     let token = generate_token();
                     let hashed_token = hash_token(&token);
-                    let mut tokens = self.paired_tokens.lock();
+                    let mut tokens = self.paired_tokens.blocking_lock();
                     tokens.insert(hashed_token.clone());
                     drop(tokens);
 
-                    let mut metadata = self.paired_device_meta.lock();
+                    let mut metadata = self.paired_device_meta.blocking_lock();
                     metadata.insert(
                         hashed_token,
                         PairedDeviceMeta::fresh(Some(client_id.clone())),
@@ -197,7 +209,7 @@ impl PairingGuard {
 
         // Increment failed attempts for this client
         {
-            let mut guard = self.failed_attempts.lock();
+            let mut guard = self.failed_attempts.blocking_lock();
             let (ref mut map, _) = *guard;
 
             // Enforce capacity bound: prune stale first, then LRU-evict if still full
@@ -252,18 +264,18 @@ impl PairingGuard {
     }
 
     /// Check if a bearer token is valid (compares against stored hashes).
-    pub fn is_authenticated(&self, token: &str) -> bool {
+    pub async fn is_authenticated(&self, token: &str) -> bool {
         if !self.require_pairing {
             return true;
         }
         let hashed = hash_token(token);
         let is_valid = {
-            let tokens = self.paired_tokens.lock();
+            let tokens = self.paired_tokens.lock().await;
             tokens.contains(&hashed)
         };
 
         if is_valid {
-            let mut metadata = self.paired_device_meta.lock();
+            let mut metadata = self.paired_device_meta.lock().await;
             let now = now_rfc3339();
             let entry = metadata
                 .entry(hashed)
@@ -275,24 +287,24 @@ impl PairingGuard {
     }
 
     /// Returns true if the gateway is already paired (has at least one token).
-    pub fn is_paired(&self) -> bool {
-        let tokens = self.paired_tokens.lock();
+    pub async fn is_paired(&self) -> bool {
+        let tokens = self.paired_tokens.lock().await;
         !tokens.is_empty()
     }
 
     /// Get all paired token hashes (for persisting to config).
-    pub fn tokens(&self) -> Vec<String> {
-        let tokens = self.paired_tokens.lock();
+    pub async fn tokens(&self) -> Vec<String> {
+        let tokens = self.paired_tokens.lock().await;
         tokens.iter().cloned().collect()
     }
 
     /// List paired devices with non-secret metadata for dashboard management.
-    pub fn paired_devices(&self) -> Vec<PairedDevice> {
+    pub async fn paired_devices(&self) -> Vec<PairedDevice> {
         let token_hashes: Vec<String> = {
-            let tokens = self.paired_tokens.lock();
+            let tokens = self.paired_tokens.lock().await;
             tokens.iter().cloned().collect()
         };
-        let metadata = self.paired_device_meta.lock();
+        let metadata = self.paired_device_meta.lock().await;
 
         let mut devices: Vec<PairedDevice> = token_hashes
             .into_iter()
@@ -324,13 +336,13 @@ impl PairingGuard {
     /// Revoke a paired device by short ID (hash prefix) or full token hash.
     ///
     /// Returns true when a device token was removed.
-    pub fn revoke_device(&self, device_id: &str) -> bool {
+    pub async fn revoke_device(&self, device_id: &str) -> bool {
         let requested = device_id.trim();
         if requested.is_empty() {
             return false;
         }
 
-        let mut tokens = self.paired_tokens.lock();
+        let mut tokens = self.paired_tokens.lock().await;
         let token_hash = tokens
             .iter()
             .find(|hash| {
@@ -348,9 +360,9 @@ impl PairingGuard {
         drop(tokens);
 
         if removed {
-            self.paired_device_meta.lock().remove(&token_hash);
+            self.paired_device_meta.lock().await.remove(&token_hash);
             if self.require_pairing && tokens_empty {
-                let mut code = self.pairing_code.lock();
+                let mut code = self.pairing_code.lock().await;
                 if code.is_none() {
                     *code = Some(generate_code());
                 }
@@ -473,31 +485,31 @@ mod tests {
     #[test]
     async fn new_guard_generates_code_when_no_tokens() {
         let guard = PairingGuard::new(true, &[]);
-        assert!(guard.pairing_code().is_some());
-        assert!(!guard.is_paired());
+        assert!(guard.pairing_code().await.is_some());
+        assert!(!guard.is_paired().await);
     }
 
     #[test]
     async fn new_guard_no_code_when_tokens_exist() {
         let guard = PairingGuard::new(true, &["zc_existing".into()]);
-        assert!(guard.pairing_code().is_none());
-        assert!(guard.is_paired());
+        assert!(guard.pairing_code().await.is_none());
+        assert!(guard.is_paired().await);
     }
 
     #[test]
     async fn new_guard_no_code_when_pairing_disabled() {
         let guard = PairingGuard::new(false, &[]);
-        assert!(guard.pairing_code().is_none());
+        assert!(guard.pairing_code().await.is_none());
     }
 
     #[test]
     async fn try_pair_correct_code() {
         let guard = PairingGuard::new(true, &[]);
-        let code = guard.pairing_code().unwrap().to_string();
+        let code = guard.pairing_code().await.unwrap().to_string();
         let token = guard.try_pair(&code, "test_client").await.unwrap();
         assert!(token.is_some());
         assert!(token.unwrap().starts_with("zc_"));
-        assert!(guard.is_paired());
+        assert!(guard.is_paired().await);
     }
 
     #[test]
@@ -519,7 +531,7 @@ mod tests {
     async fn is_authenticated_with_valid_token() {
         // Pass plaintext token — PairingGuard hashes it on load
         let guard = PairingGuard::new(true, &["zc_valid".into()]);
-        assert!(guard.is_authenticated("zc_valid"));
+        assert!(guard.is_authenticated("zc_valid").await);
     }
 
     #[test]
@@ -527,26 +539,26 @@ mod tests {
         // Pass an already-hashed token (64 hex chars)
         let hashed = hash_token("zc_valid");
         let guard = PairingGuard::new(true, &[hashed]);
-        assert!(guard.is_authenticated("zc_valid"));
+        assert!(guard.is_authenticated("zc_valid").await);
     }
 
     #[test]
     async fn is_authenticated_with_invalid_token() {
         let guard = PairingGuard::new(true, &["zc_valid".into()]);
-        assert!(!guard.is_authenticated("zc_invalid"));
+        assert!(!guard.is_authenticated("zc_invalid").await);
     }
 
     #[test]
     async fn is_authenticated_when_pairing_disabled() {
         let guard = PairingGuard::new(false, &[]);
-        assert!(guard.is_authenticated("anything"));
-        assert!(guard.is_authenticated(""));
+        assert!(guard.is_authenticated("anything").await);
+        assert!(guard.is_authenticated("").await);
     }
 
     #[test]
     async fn tokens_returns_hashes() {
         let guard = PairingGuard::new(true, &["zc_a".into(), "zc_b".into()]);
-        let tokens = guard.tokens();
+        let tokens = guard.tokens().await;
         assert_eq!(tokens.len(), 2);
         // Tokens should be stored as 64-char hex hashes, not plaintext
         for t in &tokens {
@@ -559,31 +571,31 @@ mod tests {
     #[test]
     async fn pair_then_authenticate() {
         let guard = PairingGuard::new(true, &[]);
-        let code = guard.pairing_code().unwrap().to_string();
+        let code = guard.pairing_code().await.unwrap().to_string();
         let token = guard.try_pair(&code, "test_client").await.unwrap().unwrap();
-        assert!(guard.is_authenticated(&token));
-        assert!(!guard.is_authenticated("wrong"));
+        assert!(guard.is_authenticated(&token).await);
+        assert!(!guard.is_authenticated("wrong").await);
     }
 
     #[test]
     async fn paired_devices_and_revoke_device_roundtrip() {
         let guard = PairingGuard::new(true, &[]);
-        let code = guard.pairing_code().unwrap().to_string();
+        let code = guard.pairing_code().await.unwrap().to_string();
         let token = guard.try_pair(&code, "test_client").await.unwrap().unwrap();
-        assert!(guard.is_authenticated(&token));
+        assert!(guard.is_authenticated(&token).await);
 
-        let devices = guard.paired_devices();
+        let devices = guard.paired_devices().await;
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].paired_by.as_deref(), Some("test_client"));
         assert!(devices[0].created_at.is_some());
         assert!(devices[0].last_seen_at.is_some());
 
-        let revoked = guard.revoke_device(&devices[0].id);
+        let revoked = guard.revoke_device(&devices[0].id).await;
         assert!(revoked, "revoke should remove the paired token");
-        assert!(!guard.is_authenticated(&token));
-        assert!(!guard.is_paired());
+        assert!(!guard.is_authenticated(&token).await);
+        assert!(!guard.is_paired().await);
         assert!(
-            guard.pairing_code().is_some(),
+            guard.pairing_code().await.is_some(),
             "revoke of final device should regenerate one-time pairing code"
         );
     }
@@ -593,13 +605,13 @@ mod tests {
         let token = "zc_valid";
         let token_hash = hash_token(token);
         let guard = PairingGuard::new(true, &[token_hash]);
-        let before = guard.paired_devices();
+        let before = guard.paired_devices().await;
         assert_eq!(before.len(), 1);
         assert!(before[0].last_seen_at.is_none());
 
-        assert!(guard.is_authenticated(token));
+        assert!(guard.is_authenticated(token).await);
 
-        let after = guard.paired_devices();
+        let after = guard.paired_devices().await;
         assert!(after[0].last_seen_at.is_some());
     }
 

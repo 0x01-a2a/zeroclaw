@@ -37,6 +37,7 @@ use plugin_zerox1::Zerox1Client;
 use base64::engine::general_purpose::STANDARD as BASE64_STD;
 use base64::Engine as _;
 use serde_json::{json, Value};
+use std::time::Duration;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -70,13 +71,19 @@ fn make_client(api_base: &str, token: &Option<String>) -> Result<Zerox1Client> {
 pub struct Zerox1ProposeTool {
     api_base: String,
     token: Option<String>,
+    client: reqwest::Client,
 }
 
 impl Zerox1ProposeTool {
     pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("failed to build reqwest client for Zerox1ProposeTool");
         Self {
             api_base: api_base.into(),
             token,
+            client,
         }
     }
 }
@@ -118,11 +125,22 @@ impl Tool for Zerox1ProposeTool {
             Ok(v) => v.to_string(),
             Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
         };
+        if recipient.len() != 64 || !recipient.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("recipient must be a 64-character lowercase hex string".into()) });
+        }
         let message = match require_str(&args, "payload") {
             Ok(v) => v.to_string(),
             Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
         };
+        if message.len() > 4096 {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("payload exceeds 4096 character limit".into()) });
+        }
         let conversation_id = args.get("conversation_id").and_then(Value::as_str).map(str::to_string);
+        if let Some(ref cid) = conversation_id {
+            if cid.len() > 128 || !cid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+                return Ok(ToolResult { success: false, output: String::new(), error: Some("conversation_id must be at most 128 alphanumeric/hyphen characters".into()) });
+            }
+        }
 
         let endpoint = if self.token.is_some() {
             format!("{}/hosted/negotiate/propose", self.api_base)
@@ -138,12 +156,7 @@ impl Tool for Zerox1ProposeTool {
             body["conversation_id"] = Value::String(cid.clone());
         }
 
-        // H-002: 30-second timeout on all outbound reqwest clients.
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .unwrap_or_default();
-        let mut req = client.post(&endpoint).json(&body);
+        let mut req = self.client.post(&endpoint).json(&body);
         if let Some(ref tok) = self.token {
             req = req.bearer_auth(tok);
         }
@@ -177,13 +190,19 @@ impl Tool for Zerox1ProposeTool {
 pub struct Zerox1CounterTool {
     api_base: String,
     token: Option<String>,
+    client: reqwest::Client,
 }
 
 impl Zerox1CounterTool {
     pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("failed to build reqwest client for Zerox1CounterTool");
         Self {
             api_base: api_base.into(),
             token,
+            client,
         }
     }
 }
@@ -240,10 +259,16 @@ impl Tool for Zerox1CounterTool {
             Ok(v) => v,
             Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
         };
+        if recipient.len() != 64 || !recipient.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("recipient must be a 64-character lowercase hex string".into()) });
+        }
         let conv_id = match require_str(&args, "conversation_id") {
             Ok(v) => v,
             Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
         };
+        if conv_id.len() > 128 || !conv_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("conversation_id must be at most 128 alphanumeric/hyphen characters".into()) });
+        }
         let amount = match args.get("amount").and_then(Value::as_u64) {
             Some(v) => v,
             None => return Ok(ToolResult {
@@ -262,6 +287,9 @@ impl Tool for Zerox1CounterTool {
         };
         let max_rounds = args.get("max_rounds").and_then(Value::as_u64).unwrap_or(2) as u8;
         let message = args.get("message").and_then(Value::as_str).unwrap_or("");
+        if message.len() > 4096 {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("payload exceeds 4096 character limit".into()) });
+        }
 
         if round == 0 || round > max_rounds {
             return Ok(ToolResult {
@@ -286,12 +314,7 @@ impl Tool for Zerox1CounterTool {
             "message": message,
         });
 
-        // H-002: 30-second timeout on all outbound reqwest clients.
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .unwrap_or_default();
-        let mut req = client.post(&endpoint).json(&body);
+        let mut req = self.client.post(&endpoint).json(&body);
         if let Some(ref tok) = self.token {
             req = req.bearer_auth(tok);
         }
@@ -320,13 +343,19 @@ impl Tool for Zerox1CounterTool {
 pub struct Zerox1AcceptTool {
     api_base: String,
     token: Option<String>,
+    client: reqwest::Client,
 }
 
 impl Zerox1AcceptTool {
     pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("failed to build reqwest client for Zerox1AcceptTool");
         Self {
             api_base: api_base.into(),
             token,
+            client,
         }
     }
 }
@@ -374,10 +403,16 @@ impl Tool for Zerox1AcceptTool {
             Ok(v) => v,
             Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
         };
+        if recipient.len() != 64 || !recipient.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("recipient must be a 64-character lowercase hex string".into()) });
+        }
         let conv_id = match require_str(&args, "conversation_id") {
             Ok(v) => v,
             Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
         };
+        if conv_id.len() > 128 || !conv_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("conversation_id must be at most 128 alphanumeric/hyphen characters".into()) });
+        }
         let amount = match args.get("amount").and_then(Value::as_u64) {
             Some(v) => v,
             None => return Ok(ToolResult {
@@ -401,12 +436,7 @@ impl Tool for Zerox1AcceptTool {
             "message": message,
         });
 
-        // H-002: 30-second timeout on all outbound reqwest clients.
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .unwrap_or_default();
-        let mut req = client.post(&endpoint).json(&body);
+        let mut req = self.client.post(&endpoint).json(&body);
         if let Some(ref tok) = self.token {
             req = req.bearer_auth(tok);
         }
@@ -481,14 +511,23 @@ impl Tool for Zerox1RejectTool {
             Ok(v) => v,
             Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
         };
+        if recipient.len() != 64 || !recipient.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("recipient must be a 64-character lowercase hex string".into()) });
+        }
         let conv_id = match require_str(&args, "conversation_id") {
             Ok(v) => v,
             Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
         };
+        if conv_id.len() > 128 || !conv_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("conversation_id must be at most 128 alphanumeric/hyphen characters".into()) });
+        }
         let reason = args
             .get("reason")
             .and_then(Value::as_str)
             .unwrap_or("rejected");
+        if reason.len() > 4096 {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("reason exceeds 4096 character limit".into()) });
+        }
 
         let client = match make_client(&self.api_base, &self.token) {
             Ok(c) => c,
@@ -571,14 +610,23 @@ impl Tool for Zerox1DeliverTool {
             Ok(v) => v,
             Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
         };
+        if recipient.len() != 64 || !recipient.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("recipient must be a 64-character lowercase hex string".into()) });
+        }
         let conv_id = match require_str(&args, "conversation_id") {
             Ok(v) => v,
             Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
         };
+        if conv_id.len() > 128 || !conv_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("conversation_id must be at most 128 alphanumeric/hyphen characters".into()) });
+        }
         let result_text = match require_str(&args, "result") {
             Ok(v) => v,
             Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
         };
+        if result_text.len() > 4096 {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("result exceeds 4096 character limit".into()) });
+        }
 
         let client = match make_client(&self.api_base, &self.token) {
             Ok(c) => c,
@@ -638,20 +686,26 @@ pub struct Zerox1JupiterSwapTool {
     api_base: String,
     token: Option<String>,
     /// Override swap whitelist. `None` = use DEFAULT_SWAP_WHITELIST.
-    /// `Some(empty vec)` = whitelist disabled (allow any mint).
+    /// `Some(empty vec)` = no mints permitted (deny-by-default).
     swap_whitelist: Option<Vec<String>>,
+    client: reqwest::Client,
 }
 
 impl Zerox1JupiterSwapTool {
     pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("failed to build reqwest client for Zerox1JupiterSwapTool");
         Self {
             api_base: api_base.into(),
             token,
             swap_whitelist: None,
+            client,
         }
     }
 
-    /// Override the default token whitelist. Pass an empty vec to disable enforcement.
+    /// Override the default token whitelist. Pass an empty vec to deny all mints.
     pub fn with_whitelist(mut self, whitelist: Vec<String>) -> Self {
         self.swap_whitelist = Some(whitelist);
         self
@@ -710,36 +764,50 @@ impl Tool for Zerox1JupiterSwapTool {
         let slippage_bps = args.get("slippage_bps").and_then(Value::as_u64).map(|v| v as u16);
 
         // Whitelist check — prevent swaps into fraudulent tokens.
-        let mint_allowed = |mint: &str| -> bool {
+        // Empty whitelist = no mints permitted (deny-by-default, not allow-all).
+        let check_mint = |mint: &str| -> Result<(), ToolResult> {
             match &self.swap_whitelist {
-                // Custom whitelist: empty = disabled; non-empty = must be in list.
-                Some(custom) => custom.is_empty() || custom.iter().any(|s| s == mint),
-                // Default: check against built-in constant list.
-                None => DEFAULT_SWAP_WHITELIST.contains(&mint),
+                Some(list) if !list.is_empty() => {
+                    if !list.contains(&mint.to_string()) {
+                        return Err(ToolResult {
+                            success: false,
+                            output: String::new(),
+                            error: Some("input_mint is not in the swap whitelist".into()),
+                        });
+                    }
+                }
+                Some(_empty) => {
+                    return Err(ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some("swap_whitelist is empty — no mints are permitted; add mints to config".into()),
+                    });
+                }
+                None => {
+                    if !DEFAULT_SWAP_WHITELIST.contains(&mint) {
+                        return Err(ToolResult {
+                            success: false,
+                            output: String::new(),
+                            error: Some(format!("mint {mint} is not in the default token whitelist")),
+                        });
+                    }
+                }
             }
+            Ok(())
         };
-        if !mint_allowed(input_mint) {
-            return Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(format!("input_mint {input_mint} is not in the token whitelist")),
-            });
+        if let Err(e) = check_mint(input_mint) {
+            return Ok(e);
         }
-        if !mint_allowed(output_mint) {
+        if let Err(e) = check_mint(output_mint) {
             return Ok(ToolResult {
                 success: false,
                 output: String::new(),
-                error: Some(format!("output_mint {output_mint} is not in the token whitelist")),
+                error: Some(e.error.unwrap_or_default().replace("input_mint", "output_mint")),
             });
         }
 
         let url = format!("{}/trade/swap", self.api_base);
-        // H-002: 30-second timeout on all outbound reqwest clients.
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .unwrap_or_default();
-        let mut req = client.post(&url);
+        let mut req = self.client.post(&url);
 
         if let Some(ref tok) = self.token {
             req = req.bearer_auth(tok);
@@ -789,11 +857,16 @@ impl Tool for Zerox1JupiterSwapTool {
 pub struct Zerox1SkillInstallTool {
     api_base: String,
     token: Option<String>,
+    client: reqwest::Client,
 }
 
 impl Zerox1SkillInstallTool {
     pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
-        Self { api_base: api_base.into(), token }
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("failed to build reqwest client for Zerox1SkillInstallTool");
+        Self { api_base: api_base.into(), token, client }
     }
 }
 
@@ -839,16 +912,10 @@ impl Tool for Zerox1SkillInstallTool {
             Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
         };
 
-        // H-002: 30-second timeout on all outbound reqwest clients.
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .unwrap_or_default();
-
         // ── Step 1: install the skill ─────────────────────────────────────────
         let install_url = format!("{}/skill/install-url", self.api_base);
         let body = json!({ "name": name, "url": url });
-        let mut req = client.post(&install_url).json(&body);
+        let mut req = self.client.post(&install_url).json(&body);
         if let Some(ref tok) = self.token {
             req = req.bearer_auth(tok);
         }
@@ -869,7 +936,7 @@ impl Tool for Zerox1SkillInstallTool {
 
         // ── Step 2: reload the agent ──────────────────────────────────────────
         let reload_url = format!("{}/agent/reload", self.api_base);
-        let mut req = client.post(&reload_url);
+        let mut req = self.client.post(&reload_url);
         if let Some(ref tok) = self.token {
             req = req.bearer_auth(tok);
         }
@@ -917,13 +984,19 @@ impl Tool for Zerox1SkillInstallTool {
 pub struct Zerox1BagsLaunchTool {
     api_base: String,
     token: Option<String>,
+    client: reqwest::Client,
 }
 
 impl Zerox1BagsLaunchTool {
     pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("failed to build reqwest client for Zerox1BagsLaunchTool");
         Self {
             api_base: api_base.into(),
             token,
+            client,
         }
     }
 }
@@ -1028,12 +1101,7 @@ impl Tool for Zerox1BagsLaunchTool {
         }
 
         let url = format!("{}/bags/launch", self.api_base);
-        // H-002: 30-second timeout on all outbound reqwest clients.
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .unwrap_or_default();
-        let mut req = client.post(&url).json(&body);
+        let mut req = self.client.post(&url).json(&body);
 
         if let Some(ref tok) = self.token {
             req = req.bearer_auth(tok);
@@ -1081,11 +1149,16 @@ impl Tool for Zerox1BagsLaunchTool {
 pub struct Zerox1LaunchlabBuyTool {
     api_base: String,
     token: Option<String>,
+    client: reqwest::Client,
 }
 
 impl Zerox1LaunchlabBuyTool {
     pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
-        Self { api_base: api_base.into(), token }
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("failed to build reqwest client for Zerox1LaunchlabBuyTool");
+        Self { api_base: api_base.into(), token, client }
     }
 }
 
@@ -1128,17 +1201,13 @@ impl Tool for Zerox1LaunchlabBuyTool {
         let minimum_amount_out = args.get("minimum_amount_out").and_then(Value::as_u64);
 
         let url = format!("{}/trade/launchlab/buy", self.api_base);
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .unwrap_or_default();
 
         let mut body = json!({ "mint": mint, "amount_in": amount_in });
         if let Some(min_out) = minimum_amount_out {
             body["minimum_amount_out"] = min_out.into();
         }
 
-        let mut req = client.post(&url).json(&body);
+        let mut req = self.client.post(&url).json(&body);
         if let Some(ref tok) = self.token {
             req = req.bearer_auth(tok);
         }
@@ -1175,11 +1244,16 @@ impl Tool for Zerox1LaunchlabBuyTool {
 pub struct Zerox1LaunchlabSellTool {
     api_base: String,
     token: Option<String>,
+    client: reqwest::Client,
 }
 
 impl Zerox1LaunchlabSellTool {
     pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
-        Self { api_base: api_base.into(), token }
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("failed to build reqwest client for Zerox1LaunchlabSellTool");
+        Self { api_base: api_base.into(), token, client }
     }
 }
 
@@ -1222,17 +1296,13 @@ impl Tool for Zerox1LaunchlabSellTool {
         let minimum_amount_out = args.get("minimum_amount_out").and_then(Value::as_u64);
 
         let url = format!("{}/trade/launchlab/sell", self.api_base);
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .unwrap_or_default();
 
         let mut body = json!({ "mint": mint, "amount_in": amount_in });
         if let Some(min_out) = minimum_amount_out {
             body["minimum_amount_out"] = min_out.into();
         }
 
-        let mut req = client.post(&url).json(&body);
+        let mut req = self.client.post(&url).json(&body);
         if let Some(ref tok) = self.token {
             req = req.bearer_auth(tok);
         }
@@ -1271,11 +1341,16 @@ impl Tool for Zerox1LaunchlabSellTool {
 pub struct Zerox1CpmmCreatePoolTool {
     api_base: String,
     token: Option<String>,
+    client: reqwest::Client,
 }
 
 impl Zerox1CpmmCreatePoolTool {
     pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
-        Self { api_base: api_base.into(), token }
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(60))
+            .build()
+            .expect("failed to build reqwest client for Zerox1CpmmCreatePoolTool");
+        Self { api_base: api_base.into(), token, client }
     }
 }
 
@@ -1361,11 +1436,7 @@ impl Tool for Zerox1CpmmCreatePoolTool {
             body["fee_config_index"] = i.into();
         }
 
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
-            .build()
-            .unwrap_or_default();
-        let mut req = client.post(&url).json(&body);
+        let mut req = self.client.post(&url).json(&body);
         if let Some(ref tok) = self.token {
             req = req.bearer_auth(tok);
         }
@@ -1423,13 +1494,19 @@ const X402_MAX_PER_MINUTE: u32 = 5;
 pub struct Zerox1X402FetchTool {
     api_base: String,
     token: Option<String>,
+    client: reqwest::Client,
 }
 
 impl Zerox1X402FetchTool {
     pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("failed to build reqwest client for Zerox1X402FetchTool");
         Self {
             api_base: api_base.into(),
             token,
+            client,
         }
     }
 }
@@ -1499,12 +1576,8 @@ impl Tool for Zerox1X402FetchTool {
             (max_pay_usdc * 1_000_000.0) as u64
         };
 
-        let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()?;
-
         // First attempt.
-        let resp = match Self::do_request(&http, &url, method, body_str.as_deref()).await {
+        let resp = match Self::do_request(&self.client, &url, method, body_str.as_deref()).await {
             Ok(r) => r,
             Err(e) => {
                 return Ok(ToolResult {
@@ -1619,11 +1692,7 @@ impl Tool for Zerox1X402FetchTool {
 
         // Ask the node to build and sign the payment transaction.
         let pay_url = format!("{}/wallet/x402/pay", self.api_base);
-        let node_http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .unwrap_or_default();
-        let pay_resp = node_http
+        let pay_resp = self.client
             .post(&pay_url)
             .json(&json!({ "payment_required_b64": payment_req_b64 }))
             .send()
@@ -1663,7 +1732,7 @@ impl Tool for Zerox1X402FetchTool {
 
         // Retry with the Payment-Signature header.
         let retry = match Self::do_request_with_payment(
-            &http,
+            &self.client,
             &url,
             method,
             body_str.as_deref(),

@@ -164,7 +164,16 @@ struct PromptItem {
 
 impl AcpChannel {
     /// Create a new ACP channel with the given configuration.
+    ///
+    /// L-002 (audit note): pairing is not yet implemented. The channel accepts
+    /// connections based solely on the `allowed_users` allowlist. Do not expose
+    /// to untrusted networks without an external authentication boundary.
     pub fn new(config: AcpConfig) -> Self {
+        tracing::warn!(
+            "ACP channel: pairing is not yet implemented — \
+             the channel will accept unauthenticated connections. \
+             Do not expose to untrusted networks."
+        );
         Self {
             opencode_path: config
                 .opencode_path
@@ -172,7 +181,7 @@ impl AcpChannel {
             workdir: config.workdir,
             extra_args: config.extra_args,
             allowed_users: config.allowed_users,
-            pairing: None, // TODO: Implement pairing if needed
+            pairing: None, // Pairing is not yet implemented for ACP (see L-002 audit note)
             client: reqwest::Client::new(),
             process: Arc::new(Mutex::new(None)),
             send_operation_lock: Arc::new(Mutex::new(())),
@@ -319,8 +328,9 @@ impl AcpChannel {
             .send_json_rpc_request(process, "initialize", Some(params_value))
             .await?;
 
-        // TODO: Parse response and store capabilities
-        tracing::info!("ACP initialized successfully: {:?}", response);
+        // TODO: Parse response and store capabilities (L-002 audit note)
+        tracing::debug!("ACP capabilities response (unparsed): {:?}", response);
+        tracing::info!("ACP initialized successfully");
         Ok(())
     }
 

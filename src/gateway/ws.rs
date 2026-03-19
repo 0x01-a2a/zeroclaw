@@ -367,7 +367,7 @@ pub async fn handle_ws_chat(
     let query_params = parse_ws_query_params(query.as_deref());
     let token =
         extract_ws_bearer_token(&headers, query_params.token.as_deref()).unwrap_or_default();
-    let has_valid_pairing_token = !token.is_empty() && state.pairing.is_authenticated(&token);
+    let has_valid_pairing_token = !token.is_empty() && state.pairing.is_authenticated(&token).await;
     let is_loopback_request =
         super::is_loopback_request(Some(peer_addr), &headers, state.trust_forwarded_headers);
 

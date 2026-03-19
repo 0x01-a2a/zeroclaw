@@ -6,7 +6,8 @@ use super::AppState;
 use axum::{
     extract::{Path, Query, State},
     http::{header, HeaderMap, StatusCode},
-    response::{IntoResponse, Json},
+    middleware::Next,
+    response::{IntoResponse, Json, Response},
 };
 use serde::Deserialize;
 
@@ -24,13 +25,10 @@ fn extract_bearer_token(headers: &HeaderMap) -> Option<&str> {
 
 /// Verify bearer token against PairingGuard. Returns error response if unauthorized.
 ///
-/// H-003 (audit): auth is enforced per-handler via this function rather than via an
-/// axum middleware layer. Every `/api/*` handler calls `require_auth` as its first
-/// statement. A middleware-layer refactor would be more robust against future handler
-/// additions that forget the call, but would require touching all handlers simultaneously
-/// and is deferred under YAGNI until the handler count makes it critical. New handlers
-/// MUST call `require_auth` as their first statement.
-fn require_auth(
+/// Kept as a private async helper for use by [`auth_middleware`]. Individual `/api/*`
+/// handlers no longer call this directly — auth is enforced unconditionally at the
+/// middleware layer (H-001 audit fix).
+async fn require_auth(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
@@ -39,15 +37,30 @@ fn require_auth(
     }
 
     let token = extract_bearer_token(headers).unwrap_or("");
-    if state.pairing.is_authenticated(token) {
+    if state.pairing.is_authenticated(token).await {
         Ok(())
     } else {
         Err((
             StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({
-                "error": "Unauthorized — pair first via POST /pair, then send Authorization: Bearer <token>"
-            })),
+            Json(serde_json::json!({"error": "unauthorized"})),
         ))
+    }
+}
+
+/// Axum middleware that enforces bearer token authentication on the `/api` router group.
+///
+/// H-001 (audit fix): auth is now applied unconditionally at the router layer via
+/// `from_fn_with_state`, so new handlers added to the api router are automatically
+/// protected without needing to call `require_auth` themselves.
+pub async fn auth_middleware(
+    State(state): State<AppState>,
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let headers = request.headers().clone();
+    match require_auth(&state, &headers).await {
+        Ok(()) => next.run(request).await,
+        Err((status, body)) => (status, body).into_response(),
     }
 }
 
@@ -78,12 +91,7 @@ pub struct CronAddBody {
 /// GET /api/status — system status overview
 pub async fn handle_api_status(
     State(state): State<AppState>,
-    headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-
     let config = state.config.lock().clone();
     let health = crate::health::snapshot();
 
@@ -101,7 +109,7 @@ pub async fn handle_api_status(
         "gateway_port": config.gateway.port,
         "locale": "en",
         "memory_backend": state.mem.name(),
-        "paired": state.pairing.is_paired(),
+        "paired": state.pairing.is_paired().await,
         "channels": channels,
         "health": health,
     });
@@ -112,12 +120,7 @@ pub async fn handle_api_status(
 /// GET /api/config — current config (api_key masked)
 pub async fn handle_api_config_get(
     State(state): State<AppState>,
-    headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-
     let config = state.config.lock().clone();
 
     // Serialize to TOML after masking sensitive fields.
@@ -143,13 +146,8 @@ pub async fn handle_api_config_get(
 /// PUT /api/config — update config from TOML body
 pub async fn handle_api_config_put(
     State(state): State<AppState>,
-    headers: HeaderMap,
     body: String,
 ) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-
     // Parse the incoming TOML and normalize known dashboard-masked edge cases.
     let mut incoming_toml: toml::Value = match toml::from_str(&body) {
         Ok(v) => v,
@@ -202,12 +200,7 @@ pub async fn handle_api_config_put(
 /// GET /api/tools — list registered tool specs
 pub async fn handle_api_tools(
     State(state): State<AppState>,
-    headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-
     let tools: Vec<serde_json::Value> = state
         .tools_registry
         .iter()
@@ -226,12 +219,7 @@ pub async fn handle_api_tools(
 /// GET /api/cron — list cron jobs
 pub async fn handle_api_cron_list(
     State(state): State<AppState>,
-    headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-
     let config = state.config.lock().clone();
     match crate::cron::list_jobs(&config) {
         Ok(jobs) => {
@@ -262,13 +250,8 @@ pub async fn handle_api_cron_list(
 /// POST /api/cron — add a new cron job
 pub async fn handle_api_cron_add(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Json(body): Json<CronAddBody>,
 ) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-
     let config = state.config.lock().clone();
     let schedule = crate::cron::Schedule::Cron {
         expr: body.schedule,
@@ -297,13 +280,8 @@ pub async fn handle_api_cron_add(
 /// DELETE /api/cron/:id — remove a cron job
 pub async fn handle_api_cron_delete(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-
     let config = state.config.lock().clone();
     match crate::cron::remove_job(&config, &id) {
         Ok(()) => Json(serde_json::json!({"status": "ok"})).into_response(),
@@ -318,12 +296,7 @@ pub async fn handle_api_cron_delete(
 /// GET /api/integrations — list all integrations with status
 pub async fn handle_api_integrations(
     State(state): State<AppState>,
-    headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-
     let config = state.config.lock().clone();
     let entries = crate::integrations::registry::all_integrations();
 
@@ -346,12 +319,7 @@ pub async fn handle_api_integrations(
 /// POST /api/doctor — run diagnostics
 pub async fn handle_api_doctor(
     State(state): State<AppState>,
-    headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-
     let config = state.config.lock().clone();
     let results = crate::doctor::diagnose(&config);
 
@@ -382,13 +350,8 @@ pub async fn handle_api_doctor(
 /// GET /api/memory — list or search memory entries
 pub async fn handle_api_memory_list(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Query(params): Query<MemoryQuery>,
 ) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-
     if let Some(ref query) = params.query {
         // Search mode
         match state.mem.recall(query, 50, None).await {
@@ -422,13 +385,8 @@ pub async fn handle_api_memory_list(
 /// POST /api/memory — store a memory entry
 pub async fn handle_api_memory_store(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Json(body): Json<MemoryStoreBody>,
 ) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-
     let category = body
         .category
         .as_deref()
@@ -457,13 +415,8 @@ pub async fn handle_api_memory_store(
 /// DELETE /api/memory/:key — delete a memory entry
 pub async fn handle_api_memory_delete(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Path(key): Path<String>,
 ) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-
     match state.mem.forget(&key).await {
         Ok(deleted) => {
             Json(serde_json::json!({"status": "ok", "deleted": deleted})).into_response()
@@ -479,12 +432,7 @@ pub async fn handle_api_memory_delete(
 /// GET /api/cost — cost summary
 pub async fn handle_api_cost(
     State(state): State<AppState>,
-    headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-
     if let Some(ref tracker) = state.cost_tracker {
         match tracker.get_summary() {
             Ok(summary) => Json(serde_json::json!({"cost": summary})).into_response(),
@@ -511,13 +459,8 @@ pub async fn handle_api_cost(
 
 /// GET /api/cli-tools — discovered CLI tools
 pub async fn handle_api_cli_tools(
-    State(state): State<AppState>,
-    headers: HeaderMap,
+    State(_state): State<AppState>,
 ) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-
     let tools = crate::tools::cli_discovery::discover_cli_tools(&[], &[]);
 
     Json(serde_json::json!({"cli_tools": tools})).into_response()
@@ -525,13 +468,8 @@ pub async fn handle_api_cli_tools(
 
 /// GET /api/health — component health snapshot
 pub async fn handle_api_health(
-    State(state): State<AppState>,
-    headers: HeaderMap,
+    State(_state): State<AppState>,
 ) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-
     let snapshot = crate::health::snapshot();
     Json(serde_json::json!({"health": snapshot})).into_response()
 }
@@ -539,27 +477,17 @@ pub async fn handle_api_health(
 /// GET /api/pairing/devices — list paired devices
 pub async fn handle_api_pairing_devices(
     State(state): State<AppState>,
-    headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-
-    let devices = state.pairing.paired_devices();
+    let devices = state.pairing.paired_devices().await;
     Json(serde_json::json!({ "devices": devices })).into_response()
 }
 
 /// DELETE /api/pairing/devices/:id — revoke paired device
 pub async fn handle_api_pairing_device_revoke(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-
-    if !state.pairing.revoke_device(&id) {
+    if !state.pairing.revoke_device(&id).await {
         return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "Paired device not found"})),

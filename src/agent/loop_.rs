@@ -322,23 +322,23 @@ pub(crate) fn scrub_credentials(input: &str) -> String {
                 .map(|m| m.as_str())
                 .unwrap_or("");
 
-            // Preserve first 4 chars for context, then redact
-            let prefix = if val.len() > 4 { &val[..4] } else { "" };
+            // Redact completely — no prefix preserved
+            let _ = val;
 
             if full_match.contains(':') {
                 if full_match.contains('"') {
-                    format!("\"{}\": \"{}*[REDACTED]\"", key, prefix)
+                    format!("\"{}\": \"[REDACTED]\"", key)
                 } else {
-                    format!("{}: {}*[REDACTED]", key, prefix)
+                    format!("{}: [REDACTED]", key)
                 }
             } else if full_match.contains('=') {
                 if full_match.contains('"') {
-                    format!("{}=\"{}*[REDACTED]\"", key, prefix)
+                    format!("{}=\"[REDACTED]\"", key)
                 } else {
-                    format!("{}={}*[REDACTED]", key, prefix)
+                    format!("{}=[REDACTED]", key)
                 }
             } else {
-                format!("{}: {}*[REDACTED]", key, prefix)
+                format!("{}: [REDACTED]", key)
             }
         })
         .to_string()
@@ -1120,7 +1120,9 @@ pub(crate) async fn run_tool_call_loop(
         DEFAULT_MAX_TOOL_ITERATIONS
     } else {
         max_tool_iterations
-    };
+    }
+    .max(1)
+    .min(100);
 
     let tool_specs: Vec<crate::tools::ToolSpec> = tools_registry
         .iter()
@@ -1480,7 +1482,7 @@ pub(crate) async fn run_tool_call_loop(
                     output_tokens: resp_output_tokens,
                 });
 
-                let response_text = resp.text_or_empty().to_string();
+                let mut response_text = resp.text_or_empty().to_string();
                 // First try native structured tool calls (OpenAI-format).
                 // Fall back to text-based parsing (XML tags, markdown blocks,
                 // GLM format) only if the provider returned no native calls —
@@ -1556,6 +1558,8 @@ pub(crate) async fn run_tool_call_loop(
                             "canary_id": canary.id,
                         }),
                     );
+                    // Suppress the response — return a safe error to the caller
+                    response_text = "[Security alert: response suppressed due to potential context exfiltration detected.]".to_string();
                 }
 
                 // Preserve native tool call IDs in assistant history so role=tool
@@ -3192,9 +3196,9 @@ mod tests {
     fn test_scrub_credentials() {
         let input = "API_KEY=sk-1234567890abcdef; token: 1234567890; password=\"secret123456\"";
         let scrubbed = scrub_credentials(input);
-        assert!(scrubbed.contains("API_KEY=sk-1*[REDACTED]"));
-        assert!(scrubbed.contains("token: 1234*[REDACTED]"));
-        assert!(scrubbed.contains("password=\"secr*[REDACTED]\""));
+        assert!(scrubbed.contains("API_KEY=[REDACTED]"));
+        assert!(scrubbed.contains("token: [REDACTED]"));
+        assert!(scrubbed.contains("password=\"[REDACTED]\""));
         assert!(!scrubbed.contains("abcdef"));
         assert!(!scrubbed.contains("secret123456"));
     }
@@ -3203,7 +3207,7 @@ mod tests {
     fn test_scrub_credentials_json() {
         let input = r#"{"api_key": "sk-1234567890", "other": "public"}"#;
         let scrubbed = scrub_credentials(input);
-        assert!(scrubbed.contains("\"api_key\": \"sk-1*[REDACTED]\""));
+        assert!(scrubbed.contains("\"api_key\": \"[REDACTED]\""));
         assert!(scrubbed.contains("public"));
     }
 

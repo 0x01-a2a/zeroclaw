@@ -709,7 +709,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
     println!("  GET  /ws/chat   — WebSocket agent chat");
     println!("  GET  /health    — health check");
     println!("  GET  /metrics   — Prometheus metrics");
-    if let Some(code) = pairing.pairing_code() {
+    if let Some(code) = pairing.pairing_code().await {
         println!();
         println!("  🔐 PAIRING REQUIRED — use this one-time code:");
         println!("     ┌──────────────┐");
@@ -794,28 +794,11 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
             openai_compat::CHAT_COMPLETIONS_MAX_BODY_SIZE,
         ));
 
-    // Build router with middleware
-    let app = Router::new()
-        // ── Existing routes ──
-        .route("/health", get(handle_health))
-        .route("/metrics", get(handle_metrics))
-        .route("/pair", post(handle_pair))
-        .route("/webhook", get(handle_webhook_usage).post(handle_webhook))
-        .route("/whatsapp", get(handle_whatsapp_verify))
-        .route("/whatsapp", post(handle_whatsapp_message))
-        .route("/linq", post(handle_linq_webhook))
-        .route("/github", post(handle_github_webhook))
-        .route("/bluebubbles", post(handle_bluebubbles_webhook))
-        .route("/wati", get(handle_wati_verify))
-        .route("/wati", post(handle_wati_webhook))
-        .route("/nextcloud-talk", post(handle_nextcloud_talk_webhook))
-        .route("/qq", post(handle_qq_webhook))
-        // ── OpenClaw migration: tools-enabled chat endpoint ──
-        .route("/api/chat", post(openclaw_compat::handle_api_chat))
-        // ── OpenAI-compatible endpoints ──
-        .route("/v1/models", get(openai_compat::handle_v1_models))
-        .merge(openai_compat_routes)
-        // ── Web Dashboard API routes ──
+    // ── H-001: Web Dashboard API router with middleware-level auth ──
+    // All /api/* routes (except /api/chat which is a public OpenClaw endpoint)
+    // are grouped here and protected unconditionally by the auth middleware.
+    // This prevents individual handlers from accidentally skipping auth.
+    let api_router = Router::new()
         .route("/api/status", get(api::handle_api_status))
         .route("/api/config", get(api::handle_api_config_get))
         .route("/api/tools", get(api::handle_api_tools))
@@ -839,8 +822,35 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         .route("/api/cli-tools", get(api::handle_api_cli_tools))
         .route("/api/health", get(api::handle_api_health))
         .route("/api/node-control", post(handle_node_control))
-        // ── SSE event stream ──
         .route("/api/events", get(sse::handle_sse_events))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            api::auth_middleware,
+        ));
+
+    // Build router with middleware
+    let app = Router::new()
+        // ── Existing routes ──
+        .route("/health", get(handle_health))
+        .route("/metrics", get(handle_metrics))
+        .route("/pair", post(handle_pair))
+        .route("/webhook", get(handle_webhook_usage).post(handle_webhook))
+        .route("/whatsapp", get(handle_whatsapp_verify))
+        .route("/whatsapp", post(handle_whatsapp_message))
+        .route("/linq", post(handle_linq_webhook))
+        .route("/github", post(handle_github_webhook))
+        .route("/bluebubbles", post(handle_bluebubbles_webhook))
+        .route("/wati", get(handle_wati_verify))
+        .route("/wati", post(handle_wati_webhook))
+        .route("/nextcloud-talk", post(handle_nextcloud_talk_webhook))
+        .route("/qq", post(handle_qq_webhook))
+        // ── OpenClaw migration: tools-enabled chat endpoint (public, no auth) ──
+        .route("/api/chat", post(openclaw_compat::handle_api_chat))
+        // ── OpenAI-compatible endpoints ──
+        .route("/v1/models", get(openai_compat::handle_v1_models))
+        .merge(openai_compat_routes)
+        // ── Web Dashboard API routes (auth enforced via middleware in api_router) ──
+        .merge(api_router)
         // ── WebSocket agent chat ──
         .route("/ws/chat", get(ws::handle_ws_chat))
         // ── Static assets (web dashboard) ──
@@ -880,7 +890,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
 async fn handle_health(State(state): State<AppState>) -> impl IntoResponse {
     let body = serde_json::json!({
         "status": "ok",
-        "paired": state.pairing.is_paired(),
+        "paired": state.pairing.is_paired().await,
         "require_pairing": state.pairing.require_pairing(),
         "runtime": crate::health::snapshot_json(),
     });
@@ -902,7 +912,7 @@ async fn handle_metrics(
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         let token = auth.strip_prefix("Bearer ").unwrap_or("").trim();
-        if !state.pairing.is_authenticated(token) {
+        if !state.pairing.is_authenticated(token).await {
             return (
                 StatusCode::UNAUTHORIZED,
                 [(header::CONTENT_TYPE, PROMETHEUS_CONTENT_TYPE)],
@@ -1003,9 +1013,7 @@ async fn handle_pair(
 }
 
 async fn persist_pairing_tokens(config: Arc<Mutex<Config>>, pairing: &PairingGuard) -> Result<()> {
-    let paired_tokens = pairing.tokens();
-    // This is needed because parking_lot's guard is not Send so we clone the inner
-    // this should be removed once async mutexes are used everywhere
+    let paired_tokens = pairing.tokens().await;
     let mut updated_cfg = { config.lock().clone() };
     updated_cfg.gateway.paired_tokens = paired_tokens;
     updated_cfg
@@ -1175,7 +1183,7 @@ async fn handle_node_control(
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         let token = auth.strip_prefix("Bearer ").unwrap_or("");
-        if !state.pairing.is_authenticated(token) {
+        if !state.pairing.is_authenticated(token).await {
             let err = serde_json::json!({
                 "error": "Unauthorized — pair first via POST /pair, then send Authorization: Bearer <token>"
             });
@@ -1585,7 +1593,7 @@ async fn handle_webhook(
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         let token = auth.strip_prefix("Bearer ").unwrap_or("");
-        if !state.pairing.is_authenticated(token) {
+        if !state.pairing.is_authenticated(token).await {
             tracing::warn!("Webhook: rejected — not paired / invalid bearer token");
             let err = serde_json::json!({
                 "error": "Unauthorized — pair first via POST /pair, then send Authorization: Bearer <token>"

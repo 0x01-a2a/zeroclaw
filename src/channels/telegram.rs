@@ -487,7 +487,7 @@ impl TelegramChannel {
         let normalized_allowed = Self::normalize_allowed_users(allowed_users);
         let pairing = if normalized_allowed.is_empty() {
             let guard = PairingGuard::new(true, &[]);
-            if let Some(code) = guard.pairing_code() {
+            if let Some(code) = guard.pairing_code_blocking() {
                 println!("  🔐 Telegram pairing required. One-time bind code: {code}");
                 println!("     Send `{TELEGRAM_BIND_COMMAND} <code>` from your Telegram account.");
             }
@@ -920,7 +920,7 @@ impl TelegramChannel {
     fn pairing_code_active(&self) -> bool {
         self.pairing
             .as_ref()
-            .and_then(PairingGuard::pairing_code)
+            .and_then(|g| g.pairing_code_blocking())
             .is_some()
     }
 

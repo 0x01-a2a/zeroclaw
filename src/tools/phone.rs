@@ -115,6 +115,9 @@ phone_tool!(
         }
     }),
     exec = |self, args| {
+        if let Some(s) = args["name"].as_str() {
+            if s.len() > 256 { return Ok(ToolResult { success: false, output: String::new(), error: Some("name exceeds 256 character limit".into()) }); }
+        }
         match self.post("/phone/contacts").json(&args).send().await {
             Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
             Err(e) => err_result(format!("bridge request failed: {e}")),
@@ -136,9 +139,12 @@ phone_tool!(
         }
     }),
     exec = |self, args| {
-        let box_  = args["box"].as_str().unwrap_or("inbox");
-        let limit = args["limit"].as_u64().unwrap_or(20);
-        let path  = format!("/phone/sms?box={box_}&limit={limit}");
+        let box_ = args["box"].as_str().unwrap_or("inbox");
+        if !matches!(box_, "inbox" | "sent" | "draft") {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("box must be one of: inbox, sent, draft".into()) });
+        }
+        let limit = args["limit"].as_u64().unwrap_or(20).min(200);
+        let path  = format!("/phone/sms?box={}&limit={}", urlencoding::encode(box_), limit);
         match self.get(&path).send().await {
             Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
             Err(e) => err_result(format!("bridge request failed: {e}")),
@@ -161,6 +167,16 @@ phone_tool!(
         }
     }),
     exec = |self, args| {
+        if let Some(body) = args["body"].as_str() {
+            if body.len() > 1600 {
+                return Ok(ToolResult { success: false, output: String::new(), error: Some("body exceeds 1600 character limit".into()) });
+            }
+        }
+        if let Some(to) = args["to"].as_str() {
+            if to.len() > 32 {
+                return Ok(ToolResult { success: false, output: String::new(), error: Some("to field exceeds 32 character limit".into()) });
+            }
+        }
         match self.post("/phone/sms/send").json(&args).send().await {
             Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
             Err(e) => err_result(format!("bridge request failed: {e}")),
@@ -222,6 +238,9 @@ phone_tool!(
         }
     }),
     exec = |self, args| {
+        if let Some(s) = args["title"].as_str() {
+            if s.len() > 512 { return Ok(ToolResult { success: false, output: String::new(), error: Some("title exceeds 512 character limit".into()) }); }
+        }
         match self.post("/phone/calendar").json(&args).send().await {
             Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
             Err(e) => err_result(format!("bridge request failed: {e}")),
@@ -357,6 +376,11 @@ phone_tool!(
         }
     }),
     exec = |self, args| {
+        if let Some(reply) = args["reply"].as_str() {
+            if reply.len() > 1600 {
+                return Ok(ToolResult { success: false, output: String::new(), error: Some("reply exceeds 1600 character limit".into()) });
+            }
+        }
         match self.post("/phone/notifications/reply").json(&args).send().await {
             Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
             Err(e) => err_result(format!("bridge request failed: {e}")),
@@ -478,6 +502,17 @@ phone_tool!(
         }
     }),
     exec = |self, args| {
+        let x = match args["x"].as_i64() {
+            Some(v) => v,
+            None => return Ok(ToolResult { success: false, output: String::new(), error: Some("missing required field: x".into()) }),
+        };
+        let y = match args["y"].as_i64() {
+            Some(v) => v,
+            None => return Ok(ToolResult { success: false, output: String::new(), error: Some("missing required field: y".into()) }),
+        };
+        if x < 0 || y < 0 || x > 9999 || y > 9999 {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some(format!("coordinates ({x},{y}) out of valid range [0,9999]")) });
+        }
         match self.post("/phone/a11y/click").json(&args).send().await {
             Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
             Err(e) => err_result(format!("bridge request failed: {e}")),

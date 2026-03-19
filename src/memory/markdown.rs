@@ -145,6 +145,11 @@ impl Memory for MarkdownMemory {
         category: MemoryCategory,
         _session_id: Option<&str>,
     ) -> anyhow::Result<()> {
+        if key.len() > 256 {
+            anyhow::bail!("memory key exceeds 256 character limit");
+        }
+        let key = key.replace(['\n', '\r'], " ");
+        let content = content.replace(['\n', '\r'], " ");
         let entry = format!("- **{key}**: {content}");
         let path = match category {
             MemoryCategory::Core => self.core_path(),
