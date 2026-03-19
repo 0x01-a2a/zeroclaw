@@ -65,6 +65,107 @@ const DEFAULT_MAX_TOOL_ITERATIONS: usize = 20;
 /// Matches the channel-side constant in `channels/mod.rs`.
 const AUTOSAVE_MIN_MESSAGE_CHARS: usize = 20;
 
+// ── MCP tool-schema filtering ──────────────────────────────────────────────────
+
+/// Simple single-`*` glob match for MCP tool name patterns.
+///
+/// Supports one wildcard `*` that matches any sequence of characters. Leading
+/// and trailing anchors are implicit (the whole name must match).
+fn glob_match(pattern: &str, name: &str) -> bool {
+    match pattern.split_once('*') {
+        None => pattern == name,
+        Some((prefix, suffix)) => name.starts_with(prefix) && name.ends_with(suffix),
+    }
+}
+
+/// Filter a tool spec list for a single LLM turn using `tool_filter_groups`.
+///
+/// Built-in tools (names that do not start with `"mcp_"`) always pass through.
+/// MCP tools are included only when at least one active group's pattern matches
+/// and (for `dynamic` groups) a configured keyword appears in the user message.
+///
+/// Returns the full list unchanged when `groups` is empty.
+pub(crate) fn filter_tool_specs_for_turn(
+    tool_specs: Vec<crate::tools::ToolSpec>,
+    groups: &[crate::config::schema::ToolFilterGroup],
+    user_message: &str,
+) -> Vec<crate::tools::ToolSpec> {
+    use crate::config::schema::ToolFilterGroupMode;
+
+    if groups.is_empty() {
+        return tool_specs;
+    }
+
+    let msg_lower = user_message.to_ascii_lowercase();
+
+    tool_specs
+        .into_iter()
+        .filter(|spec| {
+            // Built-in tools always pass through.
+            if !spec.name.starts_with("mcp_") {
+                return true;
+            }
+            // MCP tool: include if any active group matches.
+            groups.iter().any(|group| {
+                let pattern_matches = group.tools.iter().any(|pat| glob_match(pat, &spec.name));
+                if !pattern_matches {
+                    return false;
+                }
+                match group.mode {
+                    ToolFilterGroupMode::Always => true,
+                    ToolFilterGroupMode::Dynamic => group
+                        .keywords
+                        .iter()
+                        .any(|kw| msg_lower.contains(&kw.to_ascii_lowercase())),
+                }
+            })
+        })
+        .collect()
+}
+
+/// Narrow a tool spec list to an optional capability allowlist.
+///
+/// When `allowed` is `None`, all specs pass through unchanged.
+/// When provided, only specs whose name appears in the allowlist are retained.
+pub(crate) fn filter_by_allowed_tools(
+    specs: Vec<crate::tools::ToolSpec>,
+    allowed: Option<&[String]>,
+) -> Vec<crate::tools::ToolSpec> {
+    match allowed {
+        None => specs,
+        Some(list) => specs
+            .into_iter()
+            .filter(|spec| list.iter().any(|name| name == &spec.name))
+            .collect(),
+    }
+}
+
+/// Compute which MCP tool names should be excluded for a given turn.
+///
+/// Returns an empty `Vec` when `groups` is empty (no filtering configured).
+/// Otherwise computes the included set via `filter_tool_specs_for_turn` and
+/// returns the names of any MCP tools not in that set.
+pub(crate) fn compute_excluded_mcp_tools(
+    tools_registry: &[Box<dyn Tool>],
+    groups: &[crate::config::schema::ToolFilterGroup],
+    user_message: &str,
+) -> Vec<String> {
+    if groups.is_empty() {
+        return Vec::new();
+    }
+    let filtered_specs = filter_tool_specs_for_turn(
+        tools_registry.iter().map(|t| t.spec()).collect(),
+        groups,
+        user_message,
+    );
+    let included: HashSet<&str> = filtered_specs.iter().map(|s| s.name.as_str()).collect();
+    tools_registry
+        .iter()
+        .filter(|t| t.name().starts_with("mcp_") && !included.contains(t.name()))
+        .map(|t| t.name().to_string())
+        .collect()
+}
+
 fn should_treat_provider_as_vision_capable(provider_name: &str, provider: &dyn Provider) -> bool {
     if provider.supports_vision() {
         return true;
@@ -1308,6 +1409,29 @@ pub(crate) async fn run_tool_call_loop(
 
         let llm_started_at = Instant::now();
 
+        // ── Canary guard: per-turn context-exfiltration detection ────────────
+        // Inject a unique UUID annotation into this turn's request. After the
+        // model responds we verify it was not echoed back, which would indicate
+        // a prompt-injection exfiltration attempt.
+        //
+        // We append to the last user message rather than pushing a new message,
+        // so the message count stays stable and provider prefix-caching is not
+        // unnecessarily invalidated on turns that already have a user message.
+        let canary = crate::security::canary_guard::CanaryToken::new();
+        {
+            let last_user = request_messages
+                .iter_mut()
+                .rev()
+                .find(|m| m.role == crate::providers::ROLE_USER);
+            if let Some(msg) = last_user {
+                msg.content.push(' ');
+                msg.content.push_str(&canary.injection_text());
+            } else {
+                // No user message in context — inject as a standalone message.
+                request_messages.push(ChatMessage::user(canary.injection_text()));
+            }
+        }
+
         // Fire void hook before LLM call
         if let Some(hooks) = hooks {
             hooks.fire_llm_input(history, active_model.as_str()).await;
@@ -1410,6 +1534,29 @@ pub(crate) async fn run_tool_call_loop(
                         "parsed_tool_calls": calls.len(),
                     }),
                 );
+
+                // ── Canary exfiltration check ─────────────────────────────
+                if canary.is_leaked_in(&response_text) {
+                    tracing::warn!(
+                        turn_id = %turn_id,
+                        canary_id = %canary.id,
+                        "canary leak detected: response contains the per-turn sentinel — \
+                         potential prompt-injection exfiltration attempt"
+                    );
+                    runtime_trace::record_event(
+                        "canary_leak_detected",
+                        Some(channel_name),
+                        Some(provider_name),
+                        Some(active_model.as_str()),
+                        Some(&turn_id),
+                        Some(false),
+                        Some("canary sentinel echoed in model response"),
+                        serde_json::json!({
+                            "iteration": iteration + 1,
+                            "canary_id": canary.id,
+                        }),
+                    );
+                }
 
                 // Preserve native tool call IDs in assistant history so role=tool
                 // follow-up messages can reference the exact call id.

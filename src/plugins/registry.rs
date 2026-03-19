@@ -142,7 +142,15 @@ impl PluginRegistry {
         self.manifest_providers.clear();
 
         for manifest in self.manifests.values() {
-            self.manifest_tools.extend(manifest.tools.iter().cloned());
+            for mut tool in manifest.tools.iter().cloned() {
+                // Propagate the plugin's WASM binary path so the tool executor
+                // can delegate to the WASM runtime without carrying a back-reference
+                // to the full manifest.
+                if tool.wasm_path.is_empty() && !manifest.module_path.is_empty() {
+                    tool.wasm_path = manifest.module_path.clone();
+                }
+                self.manifest_tools.push(tool);
+            }
             for provider in &manifest.providers {
                 self.manifest_providers.insert(provider.trim().to_string());
             }
@@ -193,6 +201,7 @@ mod tests {
                     "type": "object",
                     "properties": {}
                 }),
+                wasm_path: String::new(),
             }],
             providers: vec![provider.to_string()],
         }

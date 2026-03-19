@@ -244,6 +244,8 @@ whatsapp-web = ["dep:wa-rs", "dep:wa-rs-core", "dep:wa-rs-binary", "dep:wa-rs-pr
 # Keep disabled by default to preserve current runtime behavior.
 firecrawl = []
 web-fetch-html2md = []
+# tool-elevenlabs = ElevenLabs text-to-speech tool (requires api_key in [elevenlabs] config)
+tool-elevenlabs = []
 
 [profile.release]
 opt-level = "z"      # Optimize for size

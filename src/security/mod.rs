@@ -21,6 +21,7 @@
 pub mod audit;
 #[cfg(feature = "sandbox-bubblewrap")]
 pub mod bubblewrap;
+pub mod canary_guard;
 pub mod detect;
 pub mod docker;
 pub mod file_link_guard;

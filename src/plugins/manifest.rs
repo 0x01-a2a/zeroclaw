@@ -23,6 +23,12 @@ pub struct PluginToolManifest {
     pub description: String,
     #[serde(default = "default_plugin_tool_parameters")]
     pub parameters: Value,
+    /// Resolved path to the WASM binary that implements this tool.
+    /// Populated by `PluginRegistry::rebuild_indexes` from the owning plugin
+    /// manifest's `module_path` field.  Empty string means no WASM backend is
+    /// configured (stub behaviour).
+    #[serde(default)]
+    pub wasm_path: String,
 }
 
 fn default_plugin_tool_parameters() -> Value {

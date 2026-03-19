@@ -86,6 +86,8 @@ pub mod web_search_tool;
 pub mod xlsx_read;
 #[cfg(feature = "channel-zerox1")]
 pub mod zerox1;
+#[cfg(feature = "tool-elevenlabs")]
+pub mod elevenlabs;
 
 pub use apply_patch::ApplyPatchTool;
 #[allow(unused_imports)]
@@ -153,6 +155,9 @@ pub use web_fetch::WebFetchTool;
 pub use web_search_config::WebSearchConfigTool;
 pub use web_search_tool::WebSearchTool;
 pub use xlsx_read::XlsxReadTool;
+#[cfg(feature = "tool-elevenlabs")]
+#[allow(unused_imports)]
+pub use elevenlabs::ElevenLabsTtsTool;
 
 pub use auth_profile::ManageAuthProfileTool;
 pub use quota_tools::{CheckProviderQuotaTool, EstimateQuotaCostTool, SwitchProviderTool};
@@ -219,11 +224,13 @@ pub fn add_bg_tools(tools: Vec<Box<dyn Tool>>) -> (Vec<Box<dyn Tool>>, BgJobStor
 #[derive(Clone)]
 struct PluginManifestTool {
     spec: ToolSpec,
+    /// Resolved path to the plugin's WASM binary. Empty means no WASM backend.
+    wasm_path: String,
 }
 
 impl PluginManifestTool {
-    fn new(spec: ToolSpec) -> Self {
-        Self { spec }
+    fn new(spec: ToolSpec, wasm_path: String) -> Self {
+        Self { spec, wasm_path }
     }
 }
 
@@ -241,15 +248,39 @@ impl Tool for PluginManifestTool {
         self.spec.parameters.clone()
     }
 
-    async fn execute(&self, _args: serde_json::Value) -> anyhow::Result<ToolResult> {
-        Ok(ToolResult {
-            success: false,
-            output: String::new(),
-            error: Some(format!(
-                "plugin tool '{}' is declared but execution runtime is not wired yet",
-                self.spec.name
-            )),
-        })
+    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
+        if self.wasm_path.is_empty() {
+            return Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!(
+                    "plugin tool '{}' has no WASM binary configured (module_path is empty in zeroclaw.plugin.toml)",
+                    self.spec.name
+                )),
+            });
+        }
+
+        let path = std::path::Path::new(&self.wasm_path);
+
+        // Delegate to WasmTool which handles feature-gating, timeout, and sandboxing.
+        // The WASM binary is compiled per-invocation; for production use a caching
+        // layer around plugin loading is recommended (tracked separately).
+        match wasm_tool::WasmTool::load(
+            path,
+            self.spec.name.clone(),
+            self.spec.description.clone(),
+            self.spec.parameters.clone(),
+        ) {
+            Ok(wasm) => wasm.execute(args).await,
+            Err(err) => Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!(
+                    "plugin tool '{}': failed to load WASM binary '{}': {err}",
+                    self.spec.name, self.wasm_path
+                )),
+            }),
+        }
     }
 }
 
@@ -670,11 +701,14 @@ pub fn all_tools_with_runtime(
     if config.plugins.enabled {
         let registry = plugins::runtime::current_registry();
         for tool in registry.tools() {
-            tool_arcs.push(Arc::new(PluginManifestTool::new(ToolSpec {
-                name: tool.name.clone(),
-                description: tool.description.clone(),
-                parameters: tool.parameters.clone(),
-            })));
+            tool_arcs.push(Arc::new(PluginManifestTool::new(
+                ToolSpec {
+                    name: tool.name.clone(),
+                    description: tool.description.clone(),
+                    parameters: tool.parameters.clone(),
+                },
+                tool.wasm_path.clone(),
+            )));
         }
     }
 
@@ -824,6 +858,27 @@ pub fn all_tools_with_runtime(
                 api_base,
                 token,
             )));
+        }
+    }
+
+    // ElevenLabs TTS tool (enabled when tool-elevenlabs feature is active)
+    #[cfg(feature = "tool-elevenlabs")]
+    {
+        let api_key = root_config
+            .elevenlabs
+            .api_key
+            .clone()
+            .or_else(|| std::env::var("ELEVENLABS_API_KEY").ok())
+            .unwrap_or_default();
+        if api_key.is_empty() {
+            tracing::warn!("elevenlabs_tts: skipped — no api_key in [elevenlabs] config or ELEVENLABS_API_KEY env");
+        } else {
+            tool_arcs.push(Arc::new(elevenlabs::ElevenLabsTtsTool::new(
+                api_key,
+                root_config.elevenlabs.default_voice_id.clone(),
+                root_config.elevenlabs.model_id.clone(),
+            )));
+            tracing::info!("elevenlabs_tts: registered");
         }
     }
 

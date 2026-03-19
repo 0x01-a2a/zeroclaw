@@ -373,6 +373,10 @@ pub struct Config {
     #[serde(default)]
     pub transcription: TranscriptionConfig,
 
+    /// ElevenLabs text-to-speech configuration (`[elevenlabs]`).
+    #[serde(default)]
+    pub elevenlabs: ElevenLabsConfig,
+
     /// Inter-process agent communication (`[agents_ipc]`).
     #[serde(default)]
     pub agents_ipc: AgentsIpcConfig,
@@ -698,6 +702,43 @@ impl Default for TranscriptionConfig {
     }
 }
 
+// ── ElevenLabs TTS ──────────────────────────────────────────────
+
+fn default_elevenlabs_model_id() -> String {
+    "eleven_multilingual_v2".to_string()
+}
+
+fn default_elevenlabs_voice_id() -> String {
+    String::new()
+}
+
+/// ElevenLabs text-to-speech configuration (`[elevenlabs]`).
+///
+/// Enable the `tool-elevenlabs` feature and set `api_key` to expose the
+/// `elevenlabs_tts` tool to the agent.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ElevenLabsConfig {
+    /// ElevenLabs API key. Falls back to `ELEVENLABS_API_KEY` env var when absent.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Default voice ID used when the tool call does not specify one.
+    #[serde(default = "default_elevenlabs_voice_id")]
+    pub default_voice_id: String,
+    /// ElevenLabs model ID (e.g. `eleven_multilingual_v2`, `eleven_turbo_v2_5`).
+    #[serde(default = "default_elevenlabs_model_id")]
+    pub model_id: String,
+}
+
+impl Default for ElevenLabsConfig {
+    fn default() -> Self {
+        Self {
+            api_key: None,
+            default_voice_id: default_elevenlabs_voice_id(),
+            model_id: default_elevenlabs_model_id(),
+        }
+    }
+}
+
 // ── MCP ─────────────────────────────────────────────────────────
 
 /// Transport type for MCP server connections.
@@ -903,6 +944,57 @@ pub struct AgentConfig {
     /// set to `0` for explicit disable.
     #[serde(default = "default_safety_heartbeat_turn_interval")]
     pub safety_heartbeat_turn_interval: usize,
+    /// Per-turn MCP tool schema filtering groups.
+    ///
+    /// When non-empty, only MCP tools matched by an active group are included in the
+    /// tool schema sent to the LLM for that turn. Built-in tools (names that do not
+    /// start with `"mcp_"`) always pass through regardless.
+    /// Default: `[]` (no filtering — all tools included every turn).
+    #[serde(default)]
+    pub tool_filter_groups: Vec<ToolFilterGroup>,
+}
+
+/// Activation mode for a [`ToolFilterGroup`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolFilterGroupMode {
+    /// MCP tools in this group are always included in every turn.
+    Always,
+    /// MCP tools in this group are included only when the user message contains
+    /// at least one of the configured `keywords` (case-insensitive substring match).
+    #[default]
+    Dynamic,
+}
+
+/// A named group of MCP tool glob patterns with an activation mode.
+///
+/// Used in `[agent] tool_filter_groups` to control which MCP tools are exposed
+/// to the model on each turn without bloating the tool schema.
+///
+/// # Example (TOML)
+/// ```toml
+/// [[agent.tool_filter_groups]]
+/// mode = "always"
+/// tools = ["mcp_memory_*"]
+///
+/// [[agent.tool_filter_groups]]
+/// mode = "dynamic"
+/// tools = ["mcp_weather_*"]
+/// keywords = ["weather", "forecast", "temperature"]
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ToolFilterGroup {
+    /// Activation mode: `"always"` or `"dynamic"`. Default: `"dynamic"`.
+    #[serde(default)]
+    pub mode: ToolFilterGroupMode,
+    /// Glob patterns matching MCP tool names. Supports a single `*` wildcard.
+    /// Example: `"mcp_github_*"` matches all GitHub MCP tools.
+    #[serde(default)]
+    pub tools: Vec<String>,
+    /// Keywords that activate this group in `dynamic` mode (case-insensitive substring).
+    /// Ignored when `mode = "always"`.
+    #[serde(default)]
+    pub keywords: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1008,6 +1100,7 @@ impl Default for AgentConfig {
             loop_detection_failure_streak: default_loop_detection_failure_streak(),
             safety_heartbeat_interval: default_safety_heartbeat_interval(),
             safety_heartbeat_turn_interval: default_safety_heartbeat_turn_interval(),
+            tool_filter_groups: Vec::new(),
         }
     }
 }
@@ -6250,6 +6343,7 @@ impl Default for Config {
             hardware: HardwareConfig::default(),
             query_classification: QueryClassificationConfig::default(),
             transcription: TranscriptionConfig::default(),
+            elevenlabs: ElevenLabsConfig::default(),
             agents_ipc: AgentsIpcConfig::default(),
             mcp: McpConfig::default(),
             model_support_vision: None,
@@ -9626,6 +9720,7 @@ ws_url = "ws://127.0.0.1:3002"
             hooks: HooksConfig::default(),
             hardware: HardwareConfig::default(),
             transcription: TranscriptionConfig::default(),
+            elevenlabs: ElevenLabsConfig::default(),
             agents_ipc: AgentsIpcConfig::default(),
             mcp: McpConfig::default(),
             model_support_vision: None,
@@ -10002,6 +10097,7 @@ tool_dispatcher = "xml"
             hooks: HooksConfig::default(),
             hardware: HardwareConfig::default(),
             transcription: TranscriptionConfig::default(),
+            elevenlabs: ElevenLabsConfig::default(),
             agents_ipc: AgentsIpcConfig::default(),
             mcp: McpConfig::default(),
             model_support_vision: None,
