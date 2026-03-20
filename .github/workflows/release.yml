@@ -10,6 +10,28 @@ permissions:
   contents: write
 
 jobs:
+  build-linux-x64:
+    name: Build Linux x64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked --features channel-zerox1
+
+      - name: Rename binary
+        run: cp target/release/zeroclaw zeroclaw-linux-x64
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: zeroclaw-linux-x64
+          generate_release_notes: false
+
   build-android:
     name: Build Android ARM64
     runs-on: ubuntu-latest
