@@ -4403,6 +4403,10 @@ impl ChannelsConfig {
                 Box::new(ConfigWrapper::new(self.clawdtalk.as_ref())),
                 self.clawdtalk.is_some(),
             ),
+            (
+                Box::new(ConfigWrapper::new(self.zerox1.as_ref())),
+                self.zerox1.is_some(),
+            ),
         ]
     }
 
@@ -6263,6 +6267,11 @@ pub struct Zerox1Config {
     /// Set only when using a remote host node (registered via `/hosted/register`).
     #[serde(default)]
     pub token: Option<String>,
+    /// Bearer token for authenticating to the local zerox1-node REST/WS API.
+    /// Set this to the value of `--api-secret` on the local node.
+    /// Used in local mode only (when `token` is absent).
+    #[serde(default)]
+    pub api_secret: Option<String>,
     /// Capabilities this agent advertises on the mesh (informational).
     #[serde(default)]
     pub capabilities: Vec<String>,

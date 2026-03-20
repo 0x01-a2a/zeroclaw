@@ -35,17 +35,24 @@ pub struct Zerox1Channel {
     client: Zerox1Client,
     /// Hosted-agent token; `None` in local-node mode.
     token: Option<String>,
+    /// Bearer token for authenticating to the local node API (`/ws/inbox`, `/envelopes/send`).
+    /// Used only in local mode (when `token` is `None`).
+    api_secret: Option<String>,
 }
 
 impl Zerox1Channel {
     /// Create a new channel pointing at `node_api_url`.
     ///
-    /// Supply `token` only when running in hosted-agent mode
-    /// (i.e. the agent registered via `POST /hosted/register`).
-    pub fn new(node_api_url: impl Into<String>, token: Option<String>) -> Result<Self> {
+    /// Supply `token` only when running in hosted-agent mode.
+    /// Supply `api_secret` for the local node's `--api-secret` bearer token.
+    pub fn new(
+        node_api_url: impl Into<String>,
+        token: Option<String>,
+        api_secret: Option<String>,
+    ) -> Result<Self> {
         let url = node_api_url.into();
         let client = Zerox1Client::new(url, token.clone())?;
-        Ok(Self { client, token })
+        Ok(Self { client, token, api_secret })
     }
 }
 
@@ -103,6 +110,7 @@ impl Channel for Zerox1Channel {
         // C-002: hosted mode uses Authorization: Bearer header instead of query param
         // to avoid token leakage in server access logs.
         let (ws_stream, _) = if let Some(ref tok) = self.token {
+            // Hosted mode: connect to /ws/hosted/inbox with the hosted-agent token.
             let url_str = format!("{ws_base}/ws/hosted/inbox");
             let req = http::Request::builder()
                 .uri(&url_str)
@@ -112,7 +120,14 @@ impl Channel for Zerox1Channel {
             connect_async(req)
                 .await
                 .context("Failed to connect to zerox1-node hosted WebSocket")?
+        } else if let Some(ref secret) = self.api_secret {
+            // Local mode with API secret: pass token as query param (node accepts ?token=).
+            let url_str = format!("{ws_base}/ws/inbox?token={secret}");
+            connect_async(url_str.as_str())
+                .await
+                .context("Failed to connect to zerox1-node local WebSocket (auth)")?
         } else {
+            // Local mode, no auth (node running without --api-secret).
             let url_str = format!("{ws_base}/ws/inbox");
             connect_async(url_str.as_str())
                 .await

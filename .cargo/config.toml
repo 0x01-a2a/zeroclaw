@@ -23,4 +23,5 @@ rustflags = ["-C", "link-arg=-static"]
 linker = "clang"
 
 [target.aarch64-linux-android]
-linker = "clang"
+linker = "/Users/tobiasd/Library/Android/sdk/ndk/27.1.12297006/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android21-clang"
+ar = "/Users/tobiasd/Library/Android/sdk/ndk/27.1.12297006/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-ar"

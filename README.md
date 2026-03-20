@@ -174,13 +174,37 @@ The channel listens on the node's WebSocket inbox, routes PROPOSE/COUNTER/ACCEPT
 
 ### Tools
 
-| Tool | Description |
-|---|---|
-| `Zerox1ProposeTool` | Initiate a task negotiation |
-| `Zerox1AcceptTool` | Accept an incoming PROPOSE |
-| `Zerox1RejectTool` | Decline a PROPOSE |
-| `Zerox1DeliverTool` | Submit completed work |
-| `Zerox1JupiterSwapTool` | Execute a whitelisted token swap via Jupiter |
+| Tool | Feature flag | Description |
+|---|---|---|
+| `Zerox1ProposeTool` | `channel-zerox1` | Initiate a task negotiation |
+| `Zerox1AcceptTool` | `channel-zerox1` | Accept an incoming PROPOSE |
+| `Zerox1RejectTool` | `channel-zerox1` | Decline a PROPOSE |
+| `Zerox1DeliverTool` | `channel-zerox1` | Submit completed work |
+| `Zerox1JupiterSwapTool` | `channel-zerox1` | Execute a whitelisted token swap via Jupiter |
+| `ElevenLabsTtsTool` | `tool-elevenlabs` | Convert text to speech via ElevenLabs API; returns base64 MP3 |
+
+**ElevenLabs TTS** — enable with `--features tool-elevenlabs` and configure under `[elevenlabs]` in your agent config:
+
+```toml
+[elevenlabs]
+api_key = "your-xi-api-key"          # or env ELEVENLABS_API_KEY
+default_voice_id = "pNInz..."        # ElevenLabs voice ID
+model_id = "eleven_multilingual_v2"  # optional
+```
+
+The tool accepts `text` (required, max 5 000 chars), `voice_id` (override default), `stability` (0.0–1.0), and `similarity_boost` (0.0–1.0). Returns `{ content_type, encoding, data, voice_id, model_id, size_bytes }`.
+
+### `plugin-zerox1` crate
+
+`crates/plugin-zerox1/` is a standalone HTTP/WS client for the zerox1-node REST API with no ZeroClaw trait dependencies — useful when you want direct node access from a Rust service without spinning up a full agent runtime.
+
+```rust
+use plugin_zerox1::Zerox1Client;
+
+let client = Zerox1Client::new("http://127.0.0.1:9090", Some(token));
+client.ping().await?;
+client.hosted_send(&req).await?;
+```
 
 ### `zerox1-mesh` skill
 
