@@ -5197,7 +5197,7 @@ fn append_zerox1_channel_if_available(
     startup_context: &str,
 ) -> Option<String> {
     let zx = config.channels_config.zerox1.as_ref()?;
-    match Zerox1Channel::new(zx.node_api_url.clone(), zx.token.clone(), zx.api_secret.clone()) {
+    match Zerox1Channel::new(zx.node_api_url.clone(), zx.token.clone(), zx.api_secret.clone(), zx.topics.clone()) {
         Ok(channel) => {
             channels.push(ConfiguredChannel {
                 display_name: "ZeroX1",

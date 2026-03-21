@@ -1823,6 +1823,691 @@ impl Zerox1X402FetchTool {
     }
 }
 
+// ── Advertise ────────────────────────────────────────────────────────────────
+
+/// Broadcast an `ADVERTISE` envelope announcing this agent's capabilities to all mesh peers.
+pub struct Zerox1AdvertiseTool {
+    api_base: String,
+    token: Option<String>,
+}
+
+impl Zerox1AdvertiseTool {
+    pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
+        Self { api_base: api_base.into(), token }
+    }
+}
+
+#[async_trait]
+impl Tool for Zerox1AdvertiseTool {
+    fn name(&self) -> &str {
+        "zerox1_advertise"
+    }
+
+    fn description(&self) -> &str {
+        "Broadcast an ADVERTISE envelope to all 0x01 mesh peers announcing your capabilities \
+         and availability. Use this to make yourself discoverable when another agent sends DISCOVER. \
+         Include a description of what tasks you can handle and your current status."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "capabilities": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "List of capability tags you offer (e.g. [\"summarization\", \"translation\"])"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Human-readable description of what you offer and your availability (max 512 chars)"
+                }
+            },
+            "required": ["capabilities", "description"]
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<ToolResult> {
+        let caps = match args.get("capabilities").and_then(Value::as_array) {
+            Some(v) => v.clone(),
+            None => return Ok(ToolResult { success: false, output: String::new(), error: Some("missing required array field `capabilities`".into()) }),
+        };
+        let description = match require_str(&args, "description") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        if description.len() > 512 {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("description exceeds 512 character limit".into()) });
+        }
+
+        let conv_id = "00000000000000000000000000000000";
+        let payload = serde_json::json!({ "capabilities": caps, "description": description }).to_string();
+
+        let client = match make_client(&self.api_base, &self.token) {
+            Ok(c) => c,
+            Err(e) => return Ok(send_error("client init", e)),
+        };
+
+        let send_result = if let Some(ref tok) = self.token {
+            client.hosted_send(tok, "ADVERTISE", None, conv_id, payload.as_bytes()).await
+        } else {
+            client.send_envelope("ADVERTISE", None, conv_id, payload.as_bytes()).await.map(|_| ())
+        };
+
+        match send_result {
+            Ok(()) => Ok(ToolResult {
+                success: true,
+                output: format!("ADVERTISE broadcast sent with {} capabilities", caps.len()),
+                error: None,
+            }),
+            Err(e) => Ok(send_error("zerox1_advertise", e)),
+        }
+    }
+}
+
+// ── Notarize Bid ─────────────────────────────────────────────────────────────
+
+/// Send a `NOTARIZE_BID` envelope to volunteer as notary for a task.
+pub struct Zerox1NotarizeBidTool {
+    api_base: String,
+    token: Option<String>,
+}
+
+impl Zerox1NotarizeBidTool {
+    pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
+        Self { api_base: api_base.into(), token }
+    }
+}
+
+#[async_trait]
+impl Tool for Zerox1NotarizeBidTool {
+    fn name(&self) -> &str {
+        "zerox1_notarize_bid"
+    }
+
+    fn description(&self) -> &str {
+        "Submit a NOTARIZE_BID to volunteer as the notary for a specific task negotiation. \
+         The task requester will review bids and assign one notary via NOTARIZE_ASSIGN. \
+         The notary's role is to objectively judge task completion and issue a VERDICT."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "conversation_id": {
+                    "type": "string",
+                    "description": "Conversation ID of the task you wish to notarize"
+                },
+                "message": {
+                    "type": "string",
+                    "description": "Brief statement of your qualifications to notarize this task (max 512 chars)"
+                }
+            },
+            "required": ["conversation_id", "message"]
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<ToolResult> {
+        let conv_id = match require_str(&args, "conversation_id") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        if conv_id.len() > 128 || !conv_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("conversation_id must be at most 128 alphanumeric/hyphen characters".into()) });
+        }
+        let message = match require_str(&args, "message") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        if message.len() > 512 {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("message exceeds 512 character limit".into()) });
+        }
+
+        let payload = serde_json::json!({ "message": message }).to_string();
+
+        let client = match make_client(&self.api_base, &self.token) {
+            Ok(c) => c,
+            Err(e) => return Ok(send_error("client init", e)),
+        };
+
+        // NOTARIZE_BID is a notary pubsub message — no bilateral recipient.
+        let send_result = if let Some(ref tok) = self.token {
+            client.hosted_send(tok, "NOTARIZE_BID", None, conv_id, payload.as_bytes()).await
+        } else {
+            client.send_envelope("NOTARIZE_BID", None, conv_id, payload.as_bytes()).await.map(|_| ())
+        };
+
+        match send_result {
+            Ok(()) => Ok(ToolResult {
+                success: true,
+                output: format!("NOTARIZE_BID sent for conversation_id={conv_id}"),
+                error: None,
+            }),
+            Err(e) => Ok(send_error("zerox1_notarize_bid", e)),
+        }
+    }
+}
+
+// ── Notarize Assign ───────────────────────────────────────────────────────────
+
+/// Send a `NOTARIZE_ASSIGN` envelope to designate a specific agent as notary.
+pub struct Zerox1NotarizeAssignTool {
+    api_base: String,
+    token: Option<String>,
+}
+
+impl Zerox1NotarizeAssignTool {
+    pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
+        Self { api_base: api_base.into(), token }
+    }
+}
+
+#[async_trait]
+impl Tool for Zerox1NotarizeAssignTool {
+    fn name(&self) -> &str {
+        "zerox1_notarize_assign"
+    }
+
+    fn description(&self) -> &str {
+        "Assign a specific agent as the notary for a task by sending NOTARIZE_ASSIGN. \
+         Use this after reviewing NOTARIZE_BID responses and selecting your preferred notary. \
+         The assigned notary will observe task completion and issue a VERDICT."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "recipient": {
+                    "type": "string",
+                    "description": "Hex-encoded agent_id of the agent you are assigning as notary"
+                },
+                "conversation_id": {
+                    "type": "string",
+                    "description": "Conversation ID of the task being notarized"
+                },
+                "message": {
+                    "type": "string",
+                    "description": "Optional message to the assigned notary explaining the task scope (max 512 chars)"
+                }
+            },
+            "required": ["recipient", "conversation_id"]
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<ToolResult> {
+        let recipient = match require_str(&args, "recipient") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        if recipient.len() != 64 || !recipient.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("recipient must be a 64-character lowercase hex string".into()) });
+        }
+        let conv_id = match require_str(&args, "conversation_id") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        if conv_id.len() > 128 || !conv_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("conversation_id must be at most 128 alphanumeric/hyphen characters".into()) });
+        }
+        let message = args.get("message").and_then(Value::as_str).unwrap_or("").to_string();
+        if message.len() > 512 {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("message exceeds 512 character limit".into()) });
+        }
+
+        let payload = serde_json::json!({ "message": message }).to_string();
+
+        let client = match make_client(&self.api_base, &self.token) {
+            Ok(c) => c,
+            Err(e) => return Ok(send_error("client init", e)),
+        };
+
+        let send_result = if let Some(ref tok) = self.token {
+            client.hosted_send(tok, "NOTARIZE_ASSIGN", Some(recipient), conv_id, payload.as_bytes()).await
+        } else {
+            client.send_envelope("NOTARIZE_ASSIGN", Some(recipient), conv_id, payload.as_bytes()).await.map(|_| ())
+        };
+
+        match send_result {
+            Ok(()) => Ok(ToolResult {
+                success: true,
+                output: format!("NOTARIZE_ASSIGN sent to {recipient} for conversation_id={conv_id}"),
+                error: None,
+            }),
+            Err(e) => Ok(send_error("zerox1_notarize_assign", e)),
+        }
+    }
+}
+
+// ── Verdict ───────────────────────────────────────────────────────────────────
+
+/// Send a `VERDICT` envelope with a notary judgment on task completion.
+pub struct Zerox1VerdictTool {
+    api_base: String,
+    token: Option<String>,
+}
+
+impl Zerox1VerdictTool {
+    pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
+        Self { api_base: api_base.into(), token }
+    }
+}
+
+#[async_trait]
+impl Tool for Zerox1VerdictTool {
+    fn name(&self) -> &str {
+        "zerox1_verdict"
+    }
+
+    fn description(&self) -> &str {
+        "Issue a VERDICT as the assigned notary for a task, judging whether the delivered \
+         work meets the agreed requirements. Send to the task requester. Use outcome \
+         'completed' if work was satisfactory, 'failed' if not, or 'partial' if partially met."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "recipient": {
+                    "type": "string",
+                    "description": "Hex-encoded agent_id of the task requester"
+                },
+                "conversation_id": {
+                    "type": "string",
+                    "description": "Conversation ID of the task being judged"
+                },
+                "outcome": {
+                    "type": "string",
+                    "enum": ["completed", "failed", "partial"],
+                    "description": "Judgment outcome: 'completed', 'failed', or 'partial'"
+                },
+                "reasoning": {
+                    "type": "string",
+                    "description": "Explanation of the verdict (max 1024 chars)"
+                }
+            },
+            "required": ["recipient", "conversation_id", "outcome", "reasoning"]
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<ToolResult> {
+        let recipient = match require_str(&args, "recipient") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        if recipient.len() != 64 || !recipient.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("recipient must be a 64-character lowercase hex string".into()) });
+        }
+        let conv_id = match require_str(&args, "conversation_id") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        if conv_id.len() > 128 || !conv_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("conversation_id must be at most 128 alphanumeric/hyphen characters".into()) });
+        }
+        let outcome = match require_str(&args, "outcome") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        if !["completed", "failed", "partial"].contains(&outcome) {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("outcome must be 'completed', 'failed', or 'partial'".into()) });
+        }
+        let reasoning = match require_str(&args, "reasoning") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        if reasoning.len() > 1024 {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("reasoning exceeds 1024 character limit".into()) });
+        }
+
+        let payload = serde_json::json!({ "outcome": outcome, "reasoning": reasoning }).to_string();
+
+        let client = match make_client(&self.api_base, &self.token) {
+            Ok(c) => c,
+            Err(e) => return Ok(send_error("client init", e)),
+        };
+
+        let send_result = if let Some(ref tok) = self.token {
+            client.hosted_send(tok, "VERDICT", Some(recipient), conv_id, payload.as_bytes()).await
+        } else {
+            client.send_envelope("VERDICT", Some(recipient), conv_id, payload.as_bytes()).await.map(|_| ())
+        };
+
+        match send_result {
+            Ok(()) => Ok(ToolResult {
+                success: true,
+                output: format!("VERDICT ({outcome}) issued for conversation_id={conv_id}"),
+                error: None,
+            }),
+            Err(e) => Ok(send_error("zerox1_verdict", e)),
+        }
+    }
+}
+
+// ── Dispute ───────────────────────────────────────────────────────────────────
+
+/// Send a `DISPUTE` envelope to challenge a notary verdict.
+pub struct Zerox1DisputeTool {
+    api_base: String,
+    token: Option<String>,
+}
+
+impl Zerox1DisputeTool {
+    pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
+        Self { api_base: api_base.into(), token }
+    }
+}
+
+#[async_trait]
+impl Tool for Zerox1DisputeTool {
+    fn name(&self) -> &str {
+        "zerox1_dispute"
+    }
+
+    fn description(&self) -> &str {
+        "Challenge a VERDICT by sending a DISPUTE envelope to the notary. Use this if you \
+         believe the verdict was incorrect or unfair. Provide clear evidence and reasoning \
+         for why the verdict should be reconsidered."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "recipient": {
+                    "type": "string",
+                    "description": "Hex-encoded agent_id of the notary who issued the verdict"
+                },
+                "conversation_id": {
+                    "type": "string",
+                    "description": "Conversation ID of the disputed task"
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Explanation of why you are disputing the verdict, with supporting evidence (max 1024 chars)"
+                }
+            },
+            "required": ["recipient", "conversation_id", "reason"]
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<ToolResult> {
+        let recipient = match require_str(&args, "recipient") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        if recipient.len() != 64 || !recipient.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("recipient must be a 64-character lowercase hex string".into()) });
+        }
+        let conv_id = match require_str(&args, "conversation_id") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        if conv_id.len() > 128 || !conv_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("conversation_id must be at most 128 alphanumeric/hyphen characters".into()) });
+        }
+        let reason = match require_str(&args, "reason") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        if reason.len() > 1024 {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("reason exceeds 1024 character limit".into()) });
+        }
+
+        let payload = serde_json::json!({ "reason": reason }).to_string();
+
+        let client = match make_client(&self.api_base, &self.token) {
+            Ok(c) => c,
+            Err(e) => return Ok(send_error("client init", e)),
+        };
+
+        let send_result = if let Some(ref tok) = self.token {
+            client.hosted_send(tok, "DISPUTE", Some(recipient), conv_id, payload.as_bytes()).await
+        } else {
+            client.send_envelope("DISPUTE", Some(recipient), conv_id, payload.as_bytes()).await.map(|_| ())
+        };
+
+        match send_result {
+            Ok(()) => Ok(ToolResult {
+                success: true,
+                output: format!("DISPUTE filed for conversation_id={conv_id}"),
+                error: None,
+            }),
+            Err(e) => Ok(send_error("zerox1_dispute", e)),
+        }
+    }
+}
+
+// ── Broadcast ────────────────────────────────────────────────────────────────
+
+/// Publish a structured `BROADCAST` to a named gossipsub topic via `POST /topics/{slug}/broadcast`.
+pub struct Zerox1BroadcastTool {
+    api_base: String,
+    token: Option<String>,
+    client: reqwest::Client,
+}
+
+impl Zerox1BroadcastTool {
+    pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("failed to build reqwest client for Zerox1BroadcastTool");
+        Self { api_base: api_base.into(), token, client }
+    }
+}
+
+#[async_trait]
+impl Tool for Zerox1BroadcastTool {
+    fn name(&self) -> &str {
+        "zerox1_broadcast"
+    }
+
+    fn description(&self) -> &str {
+        "Publish content (text, audio, or data) to a named topic channel on the 0x01 mesh. \
+         All agents and apps subscribed to that topic receive it. Use for announcements, \
+         data feeds, audio content, or group coordination."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "topic": {
+                    "type": "string",
+                    "description": "Topic slug (alphanumeric, hyphens, underscores, colons — e.g. \"radio:defi\", \"data:sol-price\", \"news:crypto\")"
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Human-readable title or headline for this broadcast (max 256 chars)"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Searchable tags (e.g. [\"defi\",\"solana\"])"
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["text", "audio", "data"],
+                    "description": "Content format: \"text\" (default), \"audio\", or \"data\""
+                },
+                "content_url": {
+                    "type": "string",
+                    "description": "URL to the content (audio file, data feed, etc.). Omit for text-only."
+                },
+                "content_type": {
+                    "type": "string",
+                    "description": "MIME type of content_url (e.g. \"audio/mpeg\", \"application/json\"). Omit if no URL."
+                },
+                "duration_ms": {
+                    "type": "integer",
+                    "description": "Duration in milliseconds for audio/video content. Omit if not applicable."
+                }
+            },
+            "required": ["topic", "title"]
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<ToolResult> {
+        let topic = match require_str(&args, "topic") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        if topic.is_empty()
+            || topic.len() > 128
+            || !topic.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == ':')
+        {
+            return Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some("topic must be 1-128 alphanumeric/hyphen/underscore/colon characters".into()),
+            });
+        }
+        let title = match require_str(&args, "title") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        if title.is_empty() || title.len() > 256 {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("title must be 1-256 characters".into()) });
+        }
+
+        let tags: Vec<String> = args.get("tags")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .unwrap_or_default();
+        let format = args.get("format").and_then(Value::as_str).unwrap_or("text");
+        let content_url = args.get("content_url").and_then(Value::as_str);
+        let content_type = args.get("content_type").and_then(Value::as_str);
+        let duration_ms = args.get("duration_ms").and_then(Value::as_u64);
+
+        let url = format!("{}/topics/{}/broadcast", self.api_base, topic);
+        let mut body = serde_json::json!({
+            "title": title,
+            "tags": tags,
+            "format": format,
+        });
+        if let Some(u) = content_url { body["content_url"] = Value::String(u.to_string()); }
+        if let Some(ct) = content_type { body["content_type"] = Value::String(ct.to_string()); }
+        if let Some(d) = duration_ms { body["duration_ms"] = serde_json::json!(d); }
+
+        let mut req = self.client.post(&url).json(&body);
+        if let Some(ref tok) = self.token {
+            req = req.bearer_auth(tok);
+        }
+
+        match req.send().await {
+            Ok(res) if res.status().is_success() => Ok(ToolResult {
+                success: true,
+                output: format!("BROADCAST published to topic={topic}: {title}"),
+                error: None,
+            }),
+            Ok(res) => {
+                let status = res.status();
+                let text = res.text().await.unwrap_or_default();
+                Ok(ToolResult { success: false, output: String::new(), error: Some(format!("zerox1_broadcast [{status}]: {text}")) })
+            }
+            Err(e) => Ok(send_error("zerox1_broadcast reqwest", e.into())),
+        }
+    }
+}
+
+// ── Discover ─────────────────────────────────────────────────────────────────
+
+/// Send a `DISCOVER` envelope to ask the mesh "who can do X?".
+pub struct Zerox1DiscoverTool {
+    api_base: String,
+    token: Option<String>,
+}
+
+impl Zerox1DiscoverTool {
+    pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
+        Self { api_base: api_base.into(), token }
+    }
+}
+
+#[async_trait]
+impl Tool for Zerox1DiscoverTool {
+    fn name(&self) -> &str {
+        "zerox1_discover"
+    }
+
+    fn description(&self) -> &str {
+        "Broadcast a DISCOVER query to the 0x01 mesh asking which agents can perform \
+         a specific capability or task. Agents that match will respond with ADVERTISE \
+         messages. Use this to find collaborators before sending a PROPOSE."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Description of the capability or task you are looking for (e.g. \"summarization\", \"image-generation\", \"translation\"); max 512 chars"
+                },
+                "conversation_id": {
+                    "type": "string",
+                    "description": "Optional 32-char hex conversation ID to correlate responses. Auto-generated if omitted."
+                }
+            },
+            "required": ["query"]
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<ToolResult> {
+        let query = match require_str(&args, "query") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        if query.is_empty() || query.len() > 512 {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("query must be 1-512 characters".into()) });
+        }
+
+        let conv_id = args
+            .get("conversation_id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
+
+        if conv_id.len() > 128 || !conv_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some("conversation_id must be at most 128 alphanumeric/hyphen characters".into()),
+            });
+        }
+
+        let client = match make_client(&self.api_base, &self.token) {
+            Ok(c) => c,
+            Err(e) => return Ok(send_error("client init", e)),
+        };
+
+        let payload = serde_json::json!({ "query": query }).to_string();
+
+        let send_result = if let Some(ref tok) = self.token {
+            client
+                .hosted_send(tok, "DISCOVER", None, &conv_id, payload.as_bytes())
+                .await
+        } else {
+            client
+                .send_envelope("DISCOVER", None, &conv_id, payload.as_bytes())
+                .await
+                .map(|_| ())
+        };
+
+        match send_result {
+            Ok(()) => Ok(ToolResult {
+                success: true,
+                output: format!("DISCOVER sent (conversation_id={conv_id}). Listen for ADVERTISE responses."),
+                error: None,
+            }),
+            Err(e) => Ok(send_error("zerox1_discover", e)),
+        }
+    }
+}
+
 // ── tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1839,6 +2524,13 @@ mod tests {
         assert_eq!(Zerox1DeliverTool::new(api, None).name(), "zerox1_deliver");
         assert_eq!(Zerox1BagsLaunchTool::new(api, None).name(), "bags_launch_token");
         assert_eq!(Zerox1SkillInstallTool::new(api, None).name(), "skill_install");
+        assert_eq!(Zerox1AdvertiseTool::new(api, None).name(), "zerox1_advertise");
+        assert_eq!(Zerox1BroadcastTool::new(api, None).name(), "zerox1_broadcast");
+        assert_eq!(Zerox1DiscoverTool::new(api, None).name(), "zerox1_discover");
+        assert_eq!(Zerox1NotarizeBidTool::new(api, None).name(), "zerox1_notarize_bid");
+        assert_eq!(Zerox1NotarizeAssignTool::new(api, None).name(), "zerox1_notarize_assign");
+        assert_eq!(Zerox1VerdictTool::new(api, None).name(), "zerox1_verdict");
+        assert_eq!(Zerox1DisputeTool::new(api, None).name(), "zerox1_dispute");
     }
 
     #[test]
@@ -1852,6 +2544,13 @@ mod tests {
             Zerox1DeliverTool::new(api, None).parameters_schema(),
             Zerox1BagsLaunchTool::new(api, None).parameters_schema(),
             Zerox1SkillInstallTool::new(api, None).parameters_schema(),
+            Zerox1AdvertiseTool::new(api, None).parameters_schema(),
+            Zerox1BroadcastTool::new(api, None).parameters_schema(),
+            Zerox1DiscoverTool::new(api, None).parameters_schema(),
+            Zerox1NotarizeBidTool::new(api, None).parameters_schema(),
+            Zerox1NotarizeAssignTool::new(api, None).parameters_schema(),
+            Zerox1VerdictTool::new(api, None).parameters_schema(),
+            Zerox1DisputeTool::new(api, None).parameters_schema(),
         ] {
             assert_eq!(schema["type"], "object");
             assert!(schema["required"].is_array());
@@ -1932,6 +2631,33 @@ mod tests {
             .unwrap();
         assert!(!result.success);
         assert!(result.error.unwrap().contains("conversation_id"));
+    }
+
+    #[tokio::test]
+    async fn broadcast_rejects_missing_topic() {
+        let tool = Zerox1BroadcastTool::new("http://127.0.0.1:9090", None);
+        let result = tool.execute(json!({ "payload": "hello" })).await.unwrap();
+        assert!(!result.success);
+        assert!(result.error.unwrap().contains("topic"));
+    }
+
+    #[tokio::test]
+    async fn broadcast_rejects_invalid_topic_chars() {
+        let tool = Zerox1BroadcastTool::new("http://127.0.0.1:9090", None);
+        let result = tool
+            .execute(json!({ "topic": "bad topic!", "payload": "hi" }))
+            .await
+            .unwrap();
+        assert!(!result.success);
+        assert!(result.error.unwrap().contains("topic"));
+    }
+
+    #[tokio::test]
+    async fn discover_rejects_missing_query() {
+        let tool = Zerox1DiscoverTool::new("http://127.0.0.1:9090", None);
+        let result = tool.execute(json!({})).await.unwrap();
+        assert!(!result.success);
+        assert!(result.error.unwrap().contains("query"));
     }
 
     #[tokio::test]

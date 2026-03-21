@@ -854,6 +854,34 @@ pub fn all_tools_with_runtime(
                 api_base.clone(),
                 token.clone(),
             )));
+            tool_arcs.push(Arc::new(zerox1::Zerox1AdvertiseTool::new(
+                api_base.clone(),
+                token.clone(),
+            )));
+            tool_arcs.push(Arc::new(zerox1::Zerox1BroadcastTool::new(
+                api_base.clone(),
+                token.clone(),
+            )));
+            tool_arcs.push(Arc::new(zerox1::Zerox1DiscoverTool::new(
+                api_base.clone(),
+                token.clone(),
+            )));
+            tool_arcs.push(Arc::new(zerox1::Zerox1NotarizeBidTool::new(
+                api_base.clone(),
+                token.clone(),
+            )));
+            tool_arcs.push(Arc::new(zerox1::Zerox1NotarizeAssignTool::new(
+                api_base.clone(),
+                token.clone(),
+            )));
+            tool_arcs.push(Arc::new(zerox1::Zerox1VerdictTool::new(
+                api_base.clone(),
+                token.clone(),
+            )));
+            tool_arcs.push(Arc::new(zerox1::Zerox1DisputeTool::new(
+                api_base.clone(),
+                token.clone(),
+            )));
             tool_arcs.push(Arc::new(zerox1::Zerox1X402FetchTool::new(
                 api_base,
                 token,

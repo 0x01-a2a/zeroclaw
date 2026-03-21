@@ -6284,6 +6284,12 @@ pub struct Zerox1Config {
     /// Automatically accept proposals that meet the fee and reputation thresholds.
     #[serde(default)]
     pub auto_accept: bool,
+    /// Named gossipsub topics to subscribe to (in addition to the personal inbox).
+    /// Each entry is a topic slug, e.g. `["general", "trading"]`.
+    /// The channel will open a separate WS connection per topic via
+    /// `GET /ws/topics?topic=<slug>`.
+    #[serde(default)]
+    pub topics: Vec<String>,
 }
 
 impl ChannelConfig for Zerox1Config {

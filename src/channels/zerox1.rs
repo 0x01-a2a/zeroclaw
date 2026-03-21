@@ -26,6 +26,7 @@ use base64::Engine as _;
 use futures_util::StreamExt;
 use plugin_zerox1::{InboundEnvelope, Zerox1Client};
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::http;
 use uuid::Uuid;
@@ -38,6 +39,8 @@ pub struct Zerox1Channel {
     /// Bearer token for authenticating to the local node API (`/ws/inbox`, `/envelopes/send`).
     /// Used only in local mode (when `token` is `None`).
     api_secret: Option<String>,
+    /// Named gossipsub topics to subscribe to in addition to the personal inbox.
+    topics: Vec<String>,
 }
 
 impl Zerox1Channel {
@@ -45,14 +48,16 @@ impl Zerox1Channel {
     ///
     /// Supply `token` only when running in hosted-agent mode.
     /// Supply `api_secret` for the local node's `--api-secret` bearer token.
+    /// Supply `topics` to subscribe to named gossipsub topics via `/ws/topics?topic=<slug>`.
     pub fn new(
         node_api_url: impl Into<String>,
         token: Option<String>,
         api_secret: Option<String>,
+        topics: Vec<String>,
     ) -> Result<Self> {
         let url = node_api_url.into();
         let client = Zerox1Client::new(url, token.clone())?;
-        Ok(Self { client, token, api_secret })
+        Ok(Self { client, token, api_secret, topics })
     }
 }
 
@@ -102,11 +107,28 @@ impl Channel for Zerox1Channel {
     /// - Local mode:  `ws://{host}/ws/inbox`
     /// - Hosted mode: `ws://{host}/ws/hosted/inbox` with `Authorization: Bearer <token>`
     ///
+    /// If `topics` are configured, also spawns one WS subscriber task per topic
+    /// connecting to `ws://{host}/ws/topics?topic=<slug>`.  Topic messages arrive
+    /// on the same `tx` channel as inbox messages.
+    ///
     /// Reconnects with exponential back-off on connection drops (handled by the
     /// channel subsystem's outer loop).
     async fn listen(&self, tx: mpsc::Sender<ChannelMessage>) -> Result<()> {
         let ws_base = self.client.ws_base();
 
+        // ── Spawn a subscriber task per configured topic ─────────────────────
+        let mut topic_tasks: JoinSet<()> = JoinSet::new();
+        for topic in &self.topics {
+            let ws_base_t = ws_base.clone();
+            let secret_t = self.api_secret.clone();
+            let topic_t = topic.clone();
+            let tx_t = tx.clone();
+            topic_tasks.spawn(async move {
+                subscribe_topic(&ws_base_t, secret_t.as_deref(), &topic_t, tx_t).await;
+            });
+        }
+
+        // ── Connect to the personal inbox ────────────────────────────────────
         // C-002: hosted mode uses Authorization: Bearer header instead of query param
         // to avoid token leakage in server access logs.
         let (ws_stream, _) = if let Some(ref tok) = self.token {
@@ -173,8 +195,75 @@ impl Channel for Zerox1Channel {
             }
         }
 
+        // Inbox closed — abort topic tasks so they don't linger.
+        topic_tasks.abort_all();
+
         Ok(())
     }
+}
+
+/// Connect to `/ws/topics?topic=<slug>` and forward arriving envelopes as
+/// [`ChannelMessage`]s on `tx`.  Runs until the connection closes or the
+/// receiver is dropped; designed to be spawned as a background task.
+async fn subscribe_topic(
+    ws_base: &str,
+    api_secret: Option<&str>,
+    topic: &str,
+    tx: mpsc::Sender<ChannelMessage>,
+) {
+    let url_str = if let Some(secret) = api_secret {
+        format!("{ws_base}/ws/topics?topic={topic}&token={secret}")
+    } else {
+        format!("{ws_base}/ws/topics?topic={topic}")
+    };
+
+    let ws_stream = match connect_async(url_str.as_str()).await {
+        Ok((stream, _)) => stream,
+        Err(e) => {
+            tracing::warn!("zerox1 topic '{topic}' WS connect failed: {e}");
+            return;
+        }
+    };
+
+    tracing::info!("zerox1: subscribed to topic '{topic}'");
+    let (_, mut read) = ws_stream.split();
+
+    while let Some(msg_result) = read.next().await {
+        match msg_result {
+            Ok(tungstenite_msg) => {
+                let text: String = match tungstenite_msg {
+                    tokio_tungstenite::tungstenite::Message::Text(t) => t.to_string(),
+                    tokio_tungstenite::tungstenite::Message::Binary(b) => {
+                        match String::from_utf8(b.to_vec()) {
+                            Ok(s) => s,
+                            Err(_) => continue,
+                        }
+                    }
+                    tokio_tungstenite::tungstenite::Message::Close(_) => break,
+                    _ => continue,
+                };
+
+                match serde_json::from_str::<InboundEnvelope>(&text) {
+                    Ok(env) => {
+                        if let Some(msg) = envelope_to_channel_message(env) {
+                            if tx.send(msg).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!("zerox1 topic '{topic}': failed to parse envelope: {e}");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("zerox1 topic '{topic}' WS error: {e}");
+                break;
+            }
+        }
+    }
+
+    tracing::debug!("zerox1: topic '{topic}' WS closed");
 }
 
 /// Convert a raw [`InboundEnvelope`] into a [`ChannelMessage`] for the agent loop.
