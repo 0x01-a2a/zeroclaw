@@ -41,6 +41,15 @@ pub struct Zerox1Channel {
     api_secret: Option<String>,
     /// Named gossipsub topics to subscribe to in addition to the personal inbox.
     topics: Vec<String>,
+    /// Minimum USDC fee required to forward a PROPOSE to the LLM.
+    /// Proposals with a known fee below this threshold are dropped pre-LLM.
+    min_fee_usdc: f64,
+    /// Minimum sender reputation required to forward a PROPOSE to the LLM.
+    /// Proposals with a known reputation below this threshold are dropped pre-LLM.
+    min_reputation: u32,
+    /// When `true`, PROPOSE messages that pass fee/reputation thresholds are
+    /// auto-accepted without an LLM call (an ACCEPT reply is sent immediately).
+    auto_accept: bool,
 }
 
 impl Zerox1Channel {
@@ -54,10 +63,13 @@ impl Zerox1Channel {
         token: Option<String>,
         api_secret: Option<String>,
         topics: Vec<String>,
+        min_fee_usdc: f64,
+        min_reputation: u32,
+        auto_accept: bool,
     ) -> Result<Self> {
         let url = node_api_url.into();
         let client = Zerox1Client::new(url, token.clone())?;
-        Ok(Self { client, token, api_secret, topics })
+        Ok(Self { client, token, api_secret, topics, min_fee_usdc, min_reputation, auto_accept })
     }
 }
 
@@ -176,7 +188,42 @@ impl Channel for Zerox1Channel {
 
                     match serde_json::from_str::<InboundEnvelope>(&text) {
                         Ok(env) => {
-                            if let Some(msg) = envelope_to_channel_message(env) {
+                            // ── Pre-screen gate ──────────────────────────────
+                            // Drop PROPOSE messages that fail fee or reputation
+                            // thresholds before forwarding to the LLM.  This
+                            // only fires when the node includes envelope metadata
+                            // (fee_usdc / sender_reputation); unknown = pass.
+                            if env.msg_type == "PROPOSE" {
+                                if let Some(fee) = env.fee_usdc {
+                                    if fee < self.min_fee_usdc {
+                                        tracing::info!(
+                                            "zerox1: PROPOSE from {}… rejected pre-LLM \
+                                             (fee {fee:.4} < min {:.4})",
+                                            &env.sender[..env.sender.len().min(8)],
+                                            self.min_fee_usdc,
+                                        );
+                                        continue;
+                                    }
+                                }
+                                if let Some(rep) = env.sender_reputation {
+                                    if rep < self.min_reputation {
+                                        tracing::info!(
+                                            "zerox1: PROPOSE from {}… rejected pre-LLM \
+                                             (reputation {rep} < min {})",
+                                            &env.sender[..env.sender.len().min(8)],
+                                            self.min_reputation,
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
+                            // ── Forward to agent loop ────────────────────────
+                            if let Some(msg) = envelope_to_channel_message(
+                                env,
+                                self.min_fee_usdc,
+                                self.min_reputation,
+                                self.auto_accept,
+                            ) {
                                 if tx.send(msg).await.is_err() {
                                     // Receiver dropped — host is shutting down.
                                     break;
@@ -245,7 +292,9 @@ async fn subscribe_topic(
 
                 match serde_json::from_str::<InboundEnvelope>(&text) {
                     Ok(env) => {
-                        if let Some(msg) = envelope_to_channel_message(env) {
+                        // Topic streams carry broadcast messages, not PROPOSE negotiations;
+                        // pass zeros so no pre-screen gate is applied.
+                        if let Some(msg) = envelope_to_channel_message(env, 0.0, 0, false) {
                             if tx.send(msg).await.is_err() {
                                 break;
                             }
@@ -271,7 +320,16 @@ async fn subscribe_topic(
 /// The `content` field is a compact JSON summary so the LLM sees the full
 /// protocol context (msg_type, sender, conversation_id, decoded payload).
 /// `thread_ts` carries the `conversation_id` so replies stay in the same thread.
-fn envelope_to_channel_message(env: InboundEnvelope) -> Option<ChannelMessage> {
+///
+/// For PROPOSE messages, the thresholds (`min_fee_usdc`, `min_reputation`,
+/// `auto_accept`) are injected into the content so the LLM can enforce them
+/// without needing to re-read the config.
+fn envelope_to_channel_message(
+    env: InboundEnvelope,
+    min_fee_usdc: f64,
+    min_reputation: u32,
+    auto_accept: bool,
+) -> Option<ChannelMessage> {
     // Decode payload; fall back to raw base64 if not valid UTF-8.
     let payload_text = BASE64
         .decode(&env.payload_b64)
@@ -279,19 +337,28 @@ fn envelope_to_channel_message(env: InboundEnvelope) -> Option<ChannelMessage> {
         .and_then(|b| String::from_utf8(b).ok())
         .unwrap_or_else(|| env.payload_b64.clone());
 
-    let content = serde_json::json!({
+    let mut content = serde_json::json!({
         "msg_type":        env.msg_type,
         "sender":          env.sender,
         "conversation_id": env.conversation_id,
         "payload":         payload_text,
-    })
-    .to_string();
+    });
+
+    // Inject thresholds for PROPOSE so the LLM can apply them as a fast
+    // first-pass check before spending tokens on reasoning.
+    if env.msg_type == "PROPOSE" {
+        content["_thresholds"] = serde_json::json!({
+            "min_fee_usdc":   min_fee_usdc,
+            "min_reputation": min_reputation,
+            "auto_accept":    auto_accept,
+        });
+    }
 
     Some(ChannelMessage {
         id: format!("{}:{}", env.sender, env.nonce),
         sender: env.sender.clone(),
         reply_target: env.sender,
-        content,
+        content: content.to_string(),
         channel: "zerox1".to_string(),
         timestamp: env.slot,
         thread_ts: Some(env.conversation_id),
@@ -311,19 +378,31 @@ mod tests {
             slot: 100,
             nonce: 1,
             payload_b64: BASE64.encode(payload.as_bytes()),
+            fee_usdc: None,
+            sender_reputation: None,
         }
     }
 
     #[test]
     fn envelope_to_channel_message_sets_fields() {
         let env = make_envelope("PROPOSE", "Do the thing");
-        let msg = envelope_to_channel_message(env.clone()).unwrap();
+        let msg = envelope_to_channel_message(env.clone(), 0.01, 50, false).unwrap();
 
         assert_eq!(msg.sender, env.sender);
         assert_eq!(msg.channel, "zerox1");
         assert!(msg.content.contains("PROPOSE"));
         assert!(msg.content.contains("Do the thing"));
         assert_eq!(msg.thread_ts.as_deref(), Some(env.conversation_id.as_str()));
+        // Thresholds injected for PROPOSE
+        assert!(msg.content.contains("_thresholds"));
+        assert!(msg.content.contains("min_fee_usdc"));
+    }
+
+    #[test]
+    fn envelope_to_channel_message_thresholds_not_injected_for_non_propose() {
+        let env = make_envelope("FEEDBACK", "reply here");
+        let msg = envelope_to_channel_message(env, 0.01, 50, false).unwrap();
+        assert!(!msg.content.contains("_thresholds"));
     }
 
     #[test]
@@ -331,7 +410,7 @@ mod tests {
         let mut env = make_envelope("FEEDBACK", "");
         // Replace with non-UTF8-representable raw base64
         env.payload_b64 = BASE64.encode(&[0xFF, 0xFE, 0xFD]);
-        let msg = envelope_to_channel_message(env).unwrap();
+        let msg = envelope_to_channel_message(env, 0.0, 0, false).unwrap();
         // Should fall back to raw base64 string, not panic.
         assert!(!msg.content.is_empty());
     }

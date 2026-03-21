@@ -22,6 +22,14 @@ pub struct InboundEnvelope {
     pub nonce: u64,
     /// Base64-encoded payload bytes.
     pub payload_b64: String,
+    /// USDC fee offered by the sender (present for PROPOSE envelopes when the
+    /// node extracts it from the on-chain lease metadata).
+    #[serde(default)]
+    pub fee_usdc: Option<f64>,
+    /// Sender's reputation score as reported by the aggregator and forwarded
+    /// by the node in PROPOSE envelope metadata.
+    #[serde(default)]
+    pub sender_reputation: Option<u32>,
 }
 
 /// Request body for `POST /envelopes/send` (local node, optional Bearer auth).

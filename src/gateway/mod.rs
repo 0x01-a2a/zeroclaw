@@ -3172,9 +3172,9 @@ mod tests {
         config.save().await.unwrap();
 
         let guard = PairingGuard::new(true, &[]);
-        let code = guard.pairing_code().unwrap();
+        let code = guard.pairing_code().await.unwrap();
         let token = guard.try_pair(&code, "test_client").await.unwrap().unwrap();
-        assert!(guard.is_authenticated(&token));
+        assert!(guard.is_authenticated(&token).await);
 
         let shared_config = Arc::new(Mutex::new(config));
         persist_pairing_tokens(shared_config.clone(), &guard)

@@ -744,7 +744,7 @@ mod tests {
     #[test]
     async fn correct_code_resets_failed_attempts() {
         let guard = PairingGuard::new(true, &[]);
-        let code = guard.pairing_code().unwrap().to_string();
+        let code = guard.pairing_code().await.unwrap().to_string();
         let client = "test_client";
         // Fail a few times
         for _ in 0..3 {
@@ -773,7 +773,7 @@ mod tests {
     #[test]
     async fn successful_pair_resets_only_requesting_client_state() {
         let guard = PairingGuard::new(true, &[]);
-        let code = guard.pairing_code().unwrap().to_string();
+        let code = guard.pairing_code().await.unwrap().to_string();
         let client_a = "client_a";
         let client_b = "client_b";
 
@@ -788,7 +788,7 @@ mod tests {
         assert!(result.is_some(), "client_a should pair successfully");
 
         // client_b's failed count should still be intact (3 failures recorded)
-        let state = guard.failed_attempts.lock();
+        let state = guard.failed_attempts.lock().await;
         let b_state = state.0.get(client_b);
         assert!(b_state.is_some(), "client_b state should still exist");
         assert_eq!(
@@ -810,7 +810,7 @@ mod tests {
 
         // Fill the map to MAX_TRACKED_CLIENTS with stale entries
         {
-            let mut state = guard.failed_attempts.lock();
+            let mut state = guard.failed_attempts.lock().await;
             let past = Instant::now()
                 .checked_sub(std::time::Duration::from_secs(
                     FAILED_ATTEMPT_RETENTION_SECS + 60,
@@ -832,7 +832,7 @@ mod tests {
         let result = guard.try_pair("wrong", "new_client").await;
         assert!(result.is_ok(), "New client should not be blocked");
 
-        let state = guard.failed_attempts.lock();
+        let state = guard.failed_attempts.lock().await;
         assert!(
             state.0.len() <= MAX_TRACKED_CLIENTS,
             "Map size should stay within bound, got {}",
@@ -850,7 +850,7 @@ mod tests {
 
         // Seed a stale entry and set last_sweep to long ago so sweep triggers
         {
-            let mut state = guard.failed_attempts.lock();
+            let mut state = guard.failed_attempts.lock().await;
             let past = Instant::now()
                 .checked_sub(std::time::Duration::from_secs(
                     FAILED_ATTEMPT_RETENTION_SECS + 60,
@@ -875,7 +875,7 @@ mod tests {
         // Any attempt triggers sweep
         let _ = guard.try_pair("wrong", "fresh_client").await;
 
-        let state = guard.failed_attempts.lock();
+        let state = guard.failed_attempts.lock().await;
         assert!(
             !state.0.contains_key("stale_client"),
             "Stale client should have been pruned by sweep"
