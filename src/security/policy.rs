@@ -456,6 +456,10 @@ fn contains_unquoted_shell_variable_expansion(command: &str) -> bool {
                     quote = QuoteState::None;
                     continue;
                 }
+                // Inside double quotes, $VAR/${VAR} are legitimate variable references.
+                // Command substitution $(cmd) is blocked separately by the skill audit's
+                // contains_shell_chaining check (which rejects "$(" at load time).
+                continue;
             }
             QuoteState::None => {
                 if escaped {

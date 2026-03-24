@@ -15,6 +15,14 @@ keywords = ["ai", "agent", "cli", "assistant", "chatbot"]
 categories = ["command-line-utilities", "api-bindings"]
 rust-version = "1.87"
 
+[lib]
+name = "zeroclaw"
+path = "src/lib.rs"
+# rlib is the normal Rust library linkage used by the binary and tests.
+# staticlib is needed when linking zeroclaw into the iOS app in-process
+# (selected via `--features ios-ffi` in the Xcode build script).
+crate-type = ["staticlib", "rlib"]
+
 [dependencies]
 # CLI - minimal and fast
 clap = { version = "4.5", features = ["derive"] }
@@ -139,6 +147,7 @@ tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 nostr-sdk = { version = "0.44", default-features = false, features = ["nip04", "nip59"] }
 regex = "1.10"
+regex-lite = "0.1"
 hostname = "0.4.2"
 rustls = "0.23"
 rustls-pki-types = "1.14.0"
@@ -211,7 +220,7 @@ libc = "0.2"
 
 [features]
 # Keep default minimal for widest host compatibility (including macOS 10.15).
-default = []
+default = ["phone-smart"]
 hardware = ["nusb", "tokio-serial"]
 channel-matrix = ["dep:matrix-sdk"]
 channel-lark = ["dep:prost"]
@@ -246,6 +255,12 @@ firecrawl = []
 web-fetch-html2md = []
 # tool-elevenlabs = ElevenLabs text-to-speech tool (requires api_key in [elevenlabs] config)
 tool-elevenlabs = []
+# phone-smart = on-device smart aggregator tools (pre-process raw phone data into privacy-safe summaries)
+# Enabled by default; disable for debug builds that skip regex/heuristic overhead.
+phone-smart = []
+# ios-ffi = expose zeroclaw_start / zeroclaw_stop C symbols for in-process iOS linking.
+# Requires crate-type = staticlib; enable via `--features ios-ffi` in the Xcode build script.
+ios-ffi = []
 
 [profile.release]
 opt-level = "z"      # Optimize for size

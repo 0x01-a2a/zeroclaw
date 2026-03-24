@@ -387,9 +387,28 @@ impl Tool for SkillToolHandler {
             "Executing skill tool"
         );
 
-        let output = tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(&command)
+        // Clear the inherited environment and forward only known-safe vars.
+        // This matches the ShellTool pattern (env_clear + selective passthrough)
+        // which is confirmed working on Android where full env inheritance can
+        // cause unexpected behaviour in subprocess shells.
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c").arg(&command);
+        cmd.env_clear();
+        for var in &[
+            "ZX01_TOKEN",
+            "ZX01_NODE",
+            "ZX01_BRIDGE_URL",
+            "ZX01_BRIDGE_TOKEN",
+            "ZX01_WORKSPACE",
+            "PATH",
+            "HOME",
+            "TMPDIR",
+        ] {
+            if let Ok(val) = std::env::var(var) {
+                cmd.env(var, val);
+            }
+        }
+        let output = cmd
             .output()
             .await
             .context("Failed to execute skill tool command")?;

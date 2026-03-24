@@ -85,6 +85,9 @@ pub(crate) mod util;
 
 pub use config::Config;
 
+#[cfg(feature = "ios-ffi")]
+pub mod ffi;
+
 /// Service management subcommands
 #[derive(Subcommand, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ServiceCommands {

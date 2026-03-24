@@ -61,7 +61,13 @@ fn send_error(context: &str, err: anyhow::Error) -> ToolResult {
 /// Obtain a [`Zerox1Client`] from the tool's stored fields.
 #[allow(clippy::ref_option)]
 fn make_client(api_base: &str, token: &Option<String>) -> Result<Zerox1Client> {
-    Zerox1Client::new(api_base, token.clone())
+    // In local mode (no hosted token), fall back to the ZX01_TOKEN env var so
+    // the Zerox1Client includes "Authorization: Bearer <api_secret>" on
+    // POST /envelopes/send.  Routing (`send_envelope` vs `hosted_send`) is
+    // controlled by the caller's `self.token` field, which stays None in local
+    // mode, so the env-var fallback here only affects the auth header.
+    let client_token = token.clone().or_else(|| std::env::var("ZX01_TOKEN").ok());
+    Zerox1Client::new(api_base, client_token)
 }
 
 // ── Propose ──────────────────────────────────────────────────────────────────
@@ -156,8 +162,9 @@ impl Tool for Zerox1ProposeTool {
             body["conversation_id"] = Value::String(cid.clone());
         }
 
+        let auth_token = self.token.clone().or_else(|| std::env::var("ZX01_TOKEN").ok());
         let mut req = self.client.post(&endpoint).json(&body);
-        if let Some(ref tok) = self.token {
+        if let Some(ref tok) = auth_token {
             req = req.bearer_auth(tok);
         }
 
@@ -314,8 +321,9 @@ impl Tool for Zerox1CounterTool {
             "message": message,
         });
 
+        let auth_token = self.token.clone().or_else(|| std::env::var("ZX01_TOKEN").ok());
         let mut req = self.client.post(&endpoint).json(&body);
-        if let Some(ref tok) = self.token {
+        if let Some(ref tok) = auth_token {
             req = req.bearer_auth(tok);
         }
 
@@ -436,8 +444,9 @@ impl Tool for Zerox1AcceptTool {
             "message": message,
         });
 
+        let auth_token = self.token.clone().or_else(|| std::env::var("ZX01_TOKEN").ok());
         let mut req = self.client.post(&endpoint).json(&body);
-        if let Some(ref tok) = self.token {
+        if let Some(ref tok) = auth_token {
             req = req.bearer_auth(tok);
         }
 
@@ -2392,8 +2401,9 @@ impl Tool for Zerox1BroadcastTool {
         if let Some(ct) = content_type { body["content_type"] = Value::String(ct.to_string()); }
         if let Some(d) = duration_ms { body["duration_ms"] = serde_json::json!(d); }
 
+        let auth_token = self.token.clone().or_else(|| std::env::var("ZX01_TOKEN").ok());
         let mut req = self.client.post(&url).json(&body);
-        if let Some(ref tok) = self.token {
+        if let Some(ref tok) = auth_token {
             req = req.bearer_auth(tok);
         }
 
@@ -2436,7 +2446,8 @@ impl Tool for Zerox1DiscoverTool {
     fn description(&self) -> &str {
         "Broadcast a DISCOVER query to the 0x01 mesh asking which agents can perform \
          a specific capability or task. Agents that match will respond with ADVERTISE \
-         messages. Use this to find collaborators before sending a PROPOSE."
+         messages. Use this to find collaborators before sending a PROPOSE. \
+         Optionally filter by country (ISO 3166-1 alpha-2) to find agents with local knowledge."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -2445,7 +2456,11 @@ impl Tool for Zerox1DiscoverTool {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Description of the capability or task you are looking for (e.g. \"summarization\", \"image-generation\", \"translation\"); max 512 chars"
+                    "description": "Description of the capability or task you are looking for (e.g. \"summarization\", \"supplier sourcing\", \"local market research\"); max 512 chars"
+                },
+                "country": {
+                    "type": "string",
+                    "description": "Optional ISO 3166-1 alpha-2 country code to find agents in a specific country (e.g. \"CN\" for China, \"DE\" for Germany). Agents outside this country will ignore the request."
                 },
                 "conversation_id": {
                     "type": "string",
@@ -2464,6 +2479,12 @@ impl Tool for Zerox1DiscoverTool {
         if query.is_empty() || query.len() > 512 {
             return Ok(ToolResult { success: false, output: String::new(), error: Some("query must be 1-512 characters".into()) });
         }
+
+        let country = args
+            .get("country")
+            .and_then(Value::as_str)
+            .map(|c| c.to_uppercase())
+            .filter(|c| c.len() == 2 && c.chars().all(|ch| ch.is_ascii_alphabetic()));
 
         let conv_id = args
             .get("conversation_id")
@@ -2484,7 +2505,11 @@ impl Tool for Zerox1DiscoverTool {
             Err(e) => return Ok(send_error("client init", e)),
         };
 
-        let payload = serde_json::json!({ "query": query }).to_string();
+        let mut payload_obj = serde_json::json!({ "query": query });
+        if let Some(ref c) = country {
+            payload_obj["country"] = serde_json::Value::String(c.clone());
+        }
+        let payload = payload_obj.to_string();
 
         let send_result = if let Some(ref tok) = self.token {
             client
@@ -2504,6 +2529,72 @@ impl Tool for Zerox1DiscoverTool {
                 error: None,
             }),
             Err(e) => Ok(send_error("zerox1_discover", e)),
+        }
+    }
+}
+
+// ── Get Portfolio ─────────────────────────────────────────────────────────────
+
+/// Query the local node's wallet balances: SOL, USDC, and any SPL tokens.
+pub struct Zerox1GetPortfolioTool {
+    api_base: String,
+    token: Option<String>,
+    client: reqwest::Client,
+}
+
+impl Zerox1GetPortfolioTool {
+    pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .expect("failed to build reqwest client for Zerox1GetPortfolioTool");
+        Self { api_base: api_base.into(), token, client }
+    }
+}
+
+#[async_trait]
+impl Tool for Zerox1GetPortfolioTool {
+    fn name(&self) -> &str {
+        "zerox1_get_portfolio"
+    }
+
+    fn description(&self) -> &str {
+        "Fetch the current wallet balances for this agent: SOL balance, USDC balance, \
+         and any other SPL token holdings. Use this to check available funds before \
+         planning a trade, transfer, or off-ramp."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({ "type": "object", "properties": {} })
+    }
+
+    async fn execute(&self, _args: Value) -> Result<ToolResult> {
+        let url = format!("{}/portfolio/balances", self.api_base.trim_end_matches('/'));
+
+        let mut req = self.client.get(&url);
+        if let Some(ref tok) = self.token {
+            req = req.bearer_auth(tok);
+        } else if let Ok(env_tok) = std::env::var("ZX01_TOKEN") {
+            req = req.bearer_auth(env_tok);
+        }
+
+        match req.send().await {
+            Ok(resp) if resp.status().is_success() => {
+                match resp.text().await {
+                    Ok(body) => Ok(ToolResult { success: true, output: body, error: None }),
+                    Err(e) => Ok(ToolResult { success: false, output: String::new(), error: Some(format!("failed to read response: {e}")) }),
+                }
+            }
+            Ok(resp) => Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!("portfolio/balances returned HTTP {}", resp.status())),
+            }),
+            Err(e) => Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!("request failed: {e}")),
+            }),
         }
     }
 }

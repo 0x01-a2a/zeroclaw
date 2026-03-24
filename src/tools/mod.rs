@@ -61,6 +61,8 @@ pub mod model_routing_config;
 pub mod openclaw_migration;
 pub mod pdf_read;
 pub mod phone;
+#[cfg(feature = "phone-smart")]
+pub mod phone_smart;
 pub mod pptx_read;
 pub mod process;
 pub mod proxy_config;
@@ -797,8 +799,18 @@ pub fn all_tools_with_runtime(
             tool_arcs.push(Arc::new(phone::PhoneHealthRead::new(url.clone(), secret.clone(), timeout)));
             tool_arcs.push(Arc::new(phone::PhoneWearableScan::new(url.clone(), secret.clone(), timeout)));
             tool_arcs.push(Arc::new(phone::PhoneWearableRead::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneRecoveryStatus::new(url, secret, timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneRecoveryStatus::new(url.clone(), secret.clone(), timeout)));
             tracing::info!("phone tools: registered 46 bridge tools");
+
+            // Smart aggregator tools (privacy-first: pre-process raw data on-device)
+            #[cfg(feature = "phone-smart")]
+            {
+                tool_arcs.push(Arc::new(phone_smart::PhoneDayBriefTool::new(url.clone(), secret.clone())));
+                tool_arcs.push(Arc::new(phone_smart::PhoneSmsBriefTool::new(url.clone(), secret.clone())));
+                tool_arcs.push(Arc::new(phone_smart::PhoneCommsSummaryTool::new(url.clone(), secret.clone())));
+                tool_arcs.push(Arc::new(phone_smart::PhoneContextNowTool::new(url.clone(), secret.clone())));
+                tracing::info!("phone tools: registered 4 smart aggregator tools");
+            }
         }
     }
 
@@ -863,6 +875,10 @@ pub fn all_tools_with_runtime(
                 token.clone(),
             )));
             tool_arcs.push(Arc::new(zerox1::Zerox1DiscoverTool::new(
+                api_base.clone(),
+                token.clone(),
+            )));
+            tool_arcs.push(Arc::new(zerox1::Zerox1GetPortfolioTool::new(
                 api_base.clone(),
                 token.clone(),
             )));

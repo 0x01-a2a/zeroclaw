@@ -2451,6 +2451,11 @@ pub async fn run(
 
     // ── Build system prompt from workspace MD files (OpenClaw framework) ──
     let skills = crate::skills::load_skills_with_config(&config.workspace_dir, &config);
+    let skill_tools = crate::skills::create_skill_tools(&skills, security.clone());
+    if !skill_tools.is_empty() {
+        tracing::info!(count = skill_tools.len(), "Skill shell tools registered");
+        tools_registry.extend(skill_tools);
+    }
     let mut tool_descs: Vec<(&str, &str)> = vec![
         (
             "shell",
@@ -3046,6 +3051,11 @@ pub async fn process_message_with_session(
         .collect();
 
     let skills = crate::skills::load_skills_with_config(&config.workspace_dir, &config);
+    let skill_tools = crate::skills::create_skill_tools(&skills, security.clone());
+    if !skill_tools.is_empty() {
+        tracing::info!(count = skill_tools.len(), "Skill shell tools registered");
+        tools_registry.extend(skill_tools);
+    }
     let mut tool_descs: Vec<(&str, &str)> = vec![
         ("shell", "Execute terminal commands."),
         ("file_read", "Read file contents."),

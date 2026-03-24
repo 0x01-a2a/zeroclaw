@@ -68,7 +68,10 @@ impl Zerox1Channel {
         auto_accept: bool,
     ) -> Result<Self> {
         let url = node_api_url.into();
-        let client = Zerox1Client::new(url, token.clone())?;
+        // In local mode (no hosted token), pass api_secret as the client token so
+        // send_envelope includes "Authorization: Bearer <secret>" on POST /envelopes/send.
+        let client_token = token.clone().or_else(|| api_secret.clone());
+        let client = Zerox1Client::new(url, client_token)?;
         Ok(Self { client, token, api_secret, topics, min_fee_usdc, min_reputation, auto_accept })
     }
 }

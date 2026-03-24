@@ -1,0 +1,191 @@
+// zeroclaw/src/ffi.rs
+//
+// iOS in-process FFI — called from NodeService.swift via the C bridging header:
+//
+//   int32_t zeroclaw_start(const char *config_path,
+//                           const char *node_api_url,
+//                           const char *llm_api_key);   // nullable
+//   int32_t zeroclaw_stop(void);
+//
+// iOS kernel sandbox blocks exec*()/posix_spawn(); zeroclaw must run
+// in-process. The daemon is started on 127.0.0.1:9093 to avoid clashing
+// with zerox1-node (9090) and the phone bridge server (9092).
+//
+// Compile with `--features ios-ffi`.
+
+// This module intentionally uses raw pointers passed across the C boundary.
+// All unsafe blocks are carefully reviewed; no unsafe code leaks to callers.
+#![allow(unsafe_code)]
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+#![allow(clippy::missing_safety_doc)]
+
+use std::ffi::CStr;
+use std::os::raw::c_char;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::Duration;
+
+// ---------------------------------------------------------------------------
+// Global state
+// ---------------------------------------------------------------------------
+
+/// Tracks whether a zeroclaw daemon is currently running in-process.
+static IS_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Holds the tokio Runtime that drives the daemon.  Dropping (or explicitly
+/// shutting down) the runtime cancels all tasks, stopping the daemon.
+static RUNTIME: Mutex<Option<tokio::runtime::Runtime>> = Mutex::new(None);
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Convert a (possibly null) C string pointer to an `Option<String>`.
+///
+/// # Safety
+/// `ptr` must be either null or a valid NUL-terminated C string that remains
+/// valid for the duration of this call.
+unsafe fn cstr_to_opt(ptr: *const c_char) -> Option<String> {
+    if ptr.is_null() {
+        None
+    } else {
+        // SAFETY: caller guarantees ptr is a valid, NUL-terminated C string.
+        unsafe { CStr::from_ptr(ptr) }
+            .to_str()
+            .ok()
+            .map(str::to_string)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public C API
+// ---------------------------------------------------------------------------
+
+/// Start the zeroclaw daemon in a background tokio runtime.
+///
+/// # Parameters
+/// - `config_path`  — path to the TOML config file written by `NodeService.swift`.
+/// - `node_api_url` — base URL of the zerox1-node REST API
+///                    (e.g. `"http://127.0.0.1:9090"`).
+/// - `llm_api_key`  — LLM API key (nullable).  When non-null it is exported as
+///                    `ZEROCLAW_API_KEY` before config is loaded; the config
+///                    layer always lets this env var win over any file value.
+///
+/// Returns `0` on success (or if already running), `-1` on failure.
+///
+/// # Safety
+/// All non-null pointer arguments must point to valid NUL-terminated C strings
+/// that remain valid for the duration of this call.
+#[no_mangle]
+pub extern "C" fn zeroclaw_start(
+    config_path: *const c_char,
+    node_api_url: *const c_char,
+    llm_api_key: *const c_char,
+) -> i32 {
+    // Idempotent — return success if already running.
+    if IS_RUNNING.load(Ordering::SeqCst) {
+        return 0;
+    }
+
+    // ── Parse C strings while still on the Swift/ObjC thread ────────────────
+    // SAFETY: Swift guarantees these are valid NUL-terminated strings (or null)
+    // for the duration of this call.
+    let config_path_str = match unsafe { cstr_to_opt(config_path) } {
+        Some(s) => s,
+        None => {
+            eprintln!("[zeroclaw-ffi] config_path must not be null");
+            return -1;
+        }
+    };
+    let node_api_url_str = unsafe { cstr_to_opt(node_api_url) }
+        .unwrap_or_else(|| "http://127.0.0.1:9090".to_string());
+    let llm_api_key_opt = unsafe { cstr_to_opt(llm_api_key) };
+
+    // ── Export API key as env var before Config::load_or_init ───────────────
+    // `apply_env_overrides()` (called inside load_or_init) treats
+    // ZEROCLAW_API_KEY as the highest-priority source, overriding any value
+    // that may be present in the TOML file.
+    if let Some(ref key) = llm_api_key_opt {
+        // SAFETY: std::env::set_var is safe to call from a single-threaded
+        // context.  This executes before we spawn the runtime thread.
+        std::env::set_var("ZEROCLAW_API_KEY", key);
+    }
+
+    // ── Build tokio runtime ─────────────────────────────────────────────────
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("[zeroclaw-ffi] failed to build tokio runtime: {e}");
+            return -1;
+        }
+    };
+
+    // ── Spawn the daemon task ───────────────────────────────────────────────
+    rt.spawn(async move {
+        // Load config from the TOML file written by NodeService.swift.
+        let contents = match tokio::fs::read_to_string(&config_path_str).await {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[zeroclaw-ffi] failed to read config file {config_path_str}: {e}");
+                IS_RUNNING.store(false, Ordering::SeqCst);
+                return;
+            }
+        };
+
+        let mut config: crate::config::Config = match toml::from_str(&contents) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[zeroclaw-ffi] failed to parse config file: {e}");
+                IS_RUNNING.store(false, Ordering::SeqCst);
+                return;
+            }
+        };
+
+        // Set computed path fields that are skipped during TOML serialization.
+        config.config_path = std::path::PathBuf::from(&config_path_str);
+
+        // Derive workspace_dir next to the config file when not set.
+        if config.workspace_dir == std::path::PathBuf::default() {
+            if let Some(parent) = std::path::Path::new(&config_path_str).parent() {
+                config.workspace_dir = parent.join("workspace");
+            }
+        }
+
+        // Apply env overrides (ZEROCLAW_API_KEY etc.) now that config is loaded.
+        config.apply_env_overrides();
+
+        // Override the node_api_url used by the zerox1 channel so it points to
+        // the running zerox1-node instance on this device.
+        if let Some(ref mut zerox1_cfg) = config.channels_config.zerox1 {
+            zerox1_cfg.node_api_url = node_api_url_str.clone();
+        }
+
+        // Run the daemon on port 9093 (avoids clash with node:9090 / bridge:9092).
+        if let Err(e) = crate::daemon::run(config, "127.0.0.1".to_string(), 9093).await {
+            eprintln!("[zeroclaw-ffi] daemon exited with error: {e}");
+        }
+
+        IS_RUNNING.store(false, Ordering::SeqCst);
+    });
+
+    // Store the runtime so it stays alive — dropping it would cancel all tasks.
+    *RUNTIME.lock().unwrap() = Some(rt);
+    IS_RUNNING.store(true, Ordering::SeqCst);
+    0
+}
+
+/// Stop the daemon by shutting down the tokio runtime.
+///
+/// Blocks up to 3 seconds for graceful shutdown, then forcibly terminates.
+/// Returns `0`.
+#[no_mangle]
+pub extern "C" fn zeroclaw_stop() -> i32 {
+    if let Some(rt) = RUNTIME.lock().unwrap().take() {
+        rt.shutdown_timeout(Duration::from_secs(3));
+    }
+    IS_RUNNING.store(false, Ordering::SeqCst);
+    0
+}
