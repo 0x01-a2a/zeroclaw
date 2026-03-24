@@ -4,8 +4,11 @@
 //
 //   int32_t zeroclaw_start(const char *config_path,
 //                           const char *node_api_url,
-//                           const char *llm_api_key);   // nullable
+//                           const char *llm_api_key,    // nullable
+//                           const char *data_dir);       // nullable
 //   int32_t zeroclaw_stop(void);
+//   int32_t zeroclaw_set_busy(const char *dir);  // nullable
+//   int32_t zeroclaw_set_idle(const char *dir);  // nullable
 //
 // iOS kernel sandbox blocks exec*()/posix_spawn(); zeroclaw must run
 // in-process. The daemon is started on 127.0.0.1:9093 to avoid clashing
@@ -21,6 +24,7 @@
 
 use std::ffi::CStr;
 use std::os::raw::c_char;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -35,6 +39,10 @@ static IS_RUNNING: AtomicBool = AtomicBool::new(false);
 /// Holds the tokio Runtime that drives the daemon.  Dropping (or explicitly
 /// shutting down) the runtime cancels all tasks, stopping the daemon.
 static RUNTIME: Mutex<Option<tokio::runtime::Runtime>> = Mutex::new(None);
+
+/// Directory used for the `zeroclaw.busy` sentinel file.
+/// Set once during `zeroclaw_start`; cleared on `zeroclaw_stop`.
+static DATA_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -57,6 +65,35 @@ unsafe fn cstr_to_opt(ptr: *const c_char) -> Option<String> {
     }
 }
 
+/// Write `$data_dir/zeroclaw.busy` using the currently stored DATA_DIR.
+/// Silently ignores errors (best-effort IPC).
+fn write_busy_file() {
+    if let Some(ref dir) = *DATA_DIR.lock().unwrap() {
+        let path = dir.join("zeroclaw.busy");
+        // An empty file is sufficient — presence is the signal.
+        let _ = std::fs::write(&path, b"");
+    }
+}
+
+/// Remove `$data_dir/zeroclaw.busy` using the currently stored DATA_DIR.
+/// Silently ignores errors (best-effort IPC).
+fn delete_busy_file() {
+    if let Some(ref dir) = *DATA_DIR.lock().unwrap() {
+        let path = dir.join("zeroclaw.busy");
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+/// Write `$data_dir/zeroclaw.busy` using an explicit directory path.
+fn write_busy_file_at(dir: &std::path::Path) {
+    let _ = std::fs::write(dir.join("zeroclaw.busy"), b"");
+}
+
+/// Remove `$data_dir/zeroclaw.busy` using an explicit directory path.
+fn delete_busy_file_at(dir: &std::path::Path) {
+    let _ = std::fs::remove_file(dir.join("zeroclaw.busy"));
+}
+
 // ---------------------------------------------------------------------------
 // Public C API
 // ---------------------------------------------------------------------------
@@ -70,6 +107,10 @@ unsafe fn cstr_to_opt(ptr: *const c_char) -> Option<String> {
 /// - `llm_api_key`  — LLM API key (nullable).  When non-null it is exported as
 ///                    `ZEROCLAW_API_KEY` before config is loaded; the config
 ///                    layer always lets this env var win over any file value.
+/// - `data_dir`     — (nullable) directory where `zeroclaw.busy` sentinel file
+///                    is written while the daemon is running.  Used by the iOS
+///                    `KeepAliveService` to decide whether to hold an audio
+///                    session.  When null no sentinel file is managed.
 ///
 /// Returns `0` on success (or if already running), `-1` on failure.
 ///
@@ -81,6 +122,7 @@ pub extern "C" fn zeroclaw_start(
     config_path: *const c_char,
     node_api_url: *const c_char,
     llm_api_key: *const c_char,
+    data_dir: *const c_char,
 ) -> i32 {
     // Idempotent — return success if already running.
     if IS_RUNNING.load(Ordering::SeqCst) {
@@ -100,6 +142,10 @@ pub extern "C" fn zeroclaw_start(
     let node_api_url_str = unsafe { cstr_to_opt(node_api_url) }
         .unwrap_or_else(|| "http://127.0.0.1:9090".to_string());
     let llm_api_key_opt = unsafe { cstr_to_opt(llm_api_key) };
+    let data_dir_opt = unsafe { cstr_to_opt(data_dir) }.map(PathBuf::from);
+
+    // Store the data_dir globally for use by write_busy_file / delete_busy_file.
+    *DATA_DIR.lock().unwrap() = data_dir_opt.clone();
 
     // ── Export API key as env var before Config::load_or_init ───────────────
     // `apply_env_overrides()` (called inside load_or_init) treats
@@ -124,6 +170,10 @@ pub extern "C" fn zeroclaw_start(
     };
 
     // ── Spawn the daemon task ───────────────────────────────────────────────
+    // Write the busy sentinel so KeepAliveService starts the audio session
+    // before the first async tick — no gap between start() and daemon ready.
+    write_busy_file();
+
     rt.spawn(async move {
         // Load config from the TOML file written by NodeService.swift.
         let contents = match tokio::fs::read_to_string(&config_path_str).await {
@@ -131,6 +181,7 @@ pub extern "C" fn zeroclaw_start(
             Err(e) => {
                 eprintln!("[zeroclaw-ffi] failed to read config file {config_path_str}: {e}");
                 IS_RUNNING.store(false, Ordering::SeqCst);
+                delete_busy_file();
                 return;
             }
         };
@@ -140,6 +191,7 @@ pub extern "C" fn zeroclaw_start(
             Err(e) => {
                 eprintln!("[zeroclaw-ffi] failed to parse config file: {e}");
                 IS_RUNNING.store(false, Ordering::SeqCst);
+                delete_busy_file();
                 return;
             }
         };
@@ -169,6 +221,8 @@ pub extern "C" fn zeroclaw_start(
         }
 
         IS_RUNNING.store(false, Ordering::SeqCst);
+        // Daemon exited — remove the sentinel so KeepAliveService stops audio.
+        delete_busy_file();
     });
 
     // Store the runtime so it stays alive — dropping it would cancel all tasks.
@@ -187,5 +241,44 @@ pub extern "C" fn zeroclaw_stop() -> i32 {
         rt.shutdown_timeout(Duration::from_secs(3));
     }
     IS_RUNNING.store(false, Ordering::SeqCst);
+    delete_busy_file();
+    *DATA_DIR.lock().unwrap() = None;
     0
+}
+
+/// Write the `zeroclaw.busy` sentinel file in `dir` (non-null C string).
+///
+/// Called from NodeModule.swift's `notifyAgentBusy` to mark the start of a
+/// task from the JS layer (e.g. on receipt of a PROPOSE/ACCEPT message).
+/// Pass the same `data_dir` supplied to `zeroclaw_start`.
+///
+/// # Safety
+/// `dir` must be a valid NUL-terminated C string for the duration of this call.
+#[no_mangle]
+pub extern "C" fn zeroclaw_set_busy(dir: *const c_char) -> i32 {
+    if let Some(path_str) = unsafe { cstr_to_opt(dir) } {
+        write_busy_file_at(std::path::Path::new(&path_str));
+        0
+    } else {
+        // Fall back to globally stored DATA_DIR.
+        write_busy_file();
+        0
+    }
+}
+
+/// Remove the `zeroclaw.busy` sentinel file in `dir` (non-null C string).
+///
+/// Called from NodeModule.swift's `notifyAgentIdle` when a task completes.
+///
+/// # Safety
+/// `dir` must be a valid NUL-terminated C string for the duration of this call.
+#[no_mangle]
+pub extern "C" fn zeroclaw_set_idle(dir: *const c_char) -> i32 {
+    if let Some(path_str) = unsafe { cstr_to_opt(dir) } {
+        delete_busy_file_at(std::path::Path::new(&path_str));
+        0
+    } else {
+        delete_busy_file();
+        0
+    }
 }

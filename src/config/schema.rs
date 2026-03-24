@@ -6290,6 +6290,15 @@ pub struct Zerox1Config {
     /// `GET /ws/topics?topic=<slug>`.
     #[serde(default)]
     pub topics: Vec<String>,
+    /// Solana token address of this agent's token (launched via Bags API at onboarding).
+    /// Included in every ADVERTISE so requesters know which token to buy for payment.
+    #[serde(default)]
+    pub token_address: Option<String>,
+    /// Agent-set minimum token balance (in token base units) a requester must hold
+    /// before this agent will accept a PROPOSE. 0 = no minimum.
+    /// This is the agent's own rule — not enforced by the platform.
+    #[serde(default)]
+    pub min_token_hold: u64,
 }
 
 impl ChannelConfig for Zerox1Config {

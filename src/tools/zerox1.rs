@@ -120,6 +120,19 @@ impl Tool for Zerox1ProposeTool {
                 "conversation_id": {
                     "type": "string",
                     "description": "Optional 16-byte hex conversation ID. Auto-generated if omitted."
+                },
+                "payment_type": {
+                    "type": "string",
+                    "enum": ["usdc", "token"],
+                    "description": "Payment method. 'token' = requester bought the target agent's token on-chain equal to the USD value of the task. 'usdc' = legacy direct USDC payment."
+                },
+                "payment_tx": {
+                    "type": "string",
+                    "description": "Solana transaction signature of the token purchase (required when payment_type is 'token'). The receiving agent will verify this on-chain."
+                },
+                "payment_usd_micro": {
+                    "type": "integer",
+                    "description": "USD equivalent in microunits (1 USDC = 1_000_000) at time of token purchase. Used by receiving agent to verify correct amount was spent."
                 }
             },
             "required": ["recipient", "payload"]
@@ -160,6 +173,24 @@ impl Tool for Zerox1ProposeTool {
         });
         if let Some(ref cid) = conversation_id {
             body["conversation_id"] = Value::String(cid.clone());
+        }
+
+        let payment_type = args.get("payment_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("usdc")
+            .to_string();
+        let payment_tx = args.get("payment_tx")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let payment_usd_micro = args.get("payment_usd_micro")
+            .and_then(|v| v.as_u64());
+
+        body["payment_type"] = serde_json::Value::String(payment_type);
+        if let Some(ref tx) = payment_tx {
+            body["payment_tx"] = serde_json::Value::String(tx.clone());
+        }
+        if let Some(usd) = payment_usd_micro {
+            body["payment_usd_micro"] = serde_json::Value::Number(usd.into());
         }
 
         let auth_token = self.token.clone().or_else(|| std::env::var("ZX01_TOKEN").ok());
@@ -1870,6 +1901,19 @@ impl Tool for Zerox1AdvertiseTool {
                 "description": {
                     "type": "string",
                     "description": "Human-readable description of what you offer and your availability (max 512 chars)"
+                },
+                "token_address": {
+                    "type": "string",
+                    "description": "Solana base58 token address for this agent (from Bags API). Included in ADVERTISE so requesters know which token to buy."
+                },
+                "capability_proofs": {
+                    "type": "array",
+                    "description": "Array of capability proof objects. Each proof contains: capability, proof_type, benchmark_id, input_hash, output_hash, signature, timestamp, attestation_url. Generated before advertising.",
+                    "items": { "type": "object" }
+                },
+                "min_token_hold": {
+                    "type": "integer",
+                    "description": "Optional minimum token balance (base units) a requester must hold. 0 or omit for no minimum."
                 }
             },
             "required": ["capabilities", "description"]
@@ -1889,8 +1933,34 @@ impl Tool for Zerox1AdvertiseTool {
             return Ok(ToolResult { success: false, output: String::new(), error: Some("description exceeds 512 character limit".into()) });
         }
 
+        let token_address = args.get("token_address")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let capability_proofs = args.get("capability_proofs")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let min_token_hold = args.get("min_token_hold")
+            .and_then(|v| v.as_u64())
+            .filter(|&n| n > 0);
+
+        let mut payload_json = serde_json::json!({
+            "capabilities": caps,
+            "description": description,
+        });
+        if let Some(ref addr) = token_address {
+            payload_json["token_address"] = serde_json::Value::String(addr.clone());
+        }
+        if !capability_proofs.is_empty() {
+            payload_json["capability_proofs"] = serde_json::Value::Array(capability_proofs);
+        }
+        if let Some(hold) = min_token_hold {
+            payload_json["min_token_hold"] = serde_json::Value::Number(hold.into());
+        }
+        let payload = payload_json.to_string();
+
         let conv_id = "00000000000000000000000000000000";
-        let payload = serde_json::json!({ "capabilities": caps, "description": description }).to_string();
 
         let client = match make_client(&self.api_base, &self.token) {
             Ok(c) => c,
