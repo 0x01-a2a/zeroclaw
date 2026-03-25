@@ -355,6 +355,37 @@ fn envelope_to_channel_message(
             "min_reputation": min_reputation,
             "auto_accept":    auto_accept,
         });
+        // Inject payment context from the PROPOSE payload so the LLM has structured
+        // payment/downpayment info without parsing the raw payload itself.
+        if let Ok(body) = serde_json::from_str::<serde_json::Value>(&payload_text) {
+            // Always inject payment context when any payment field is present.
+            // payment_type is always "token" — requester buys the agent's own token.
+            let has_payment_field = body.get("token_mint").is_some()
+                || body.get("payment_tx").is_some()
+                || body.get("payment_usd_micro").is_some();
+            if has_payment_field {
+                let mut payment = serde_json::json!({ "payment_type": "token" });
+                if let Some(mint) = body.get("token_mint").and_then(|v| v.as_str()) {
+                    payment["token_mint"] = serde_json::Value::String(mint.to_string());
+                }
+                if let Some(tx) = body.get("payment_tx").and_then(|v| v.as_str()) {
+                    payment["payment_tx"] = serde_json::Value::String(tx.to_string());
+                }
+                if let Some(usd) = body.get("payment_usd_micro").and_then(|v| v.as_u64()) {
+                    payment["payment_usd_micro"] = serde_json::Value::Number(usd.into());
+                    // Flag downpayment below the minimum fee threshold (USD equivalent).
+                    let min_micro = (min_fee_usdc * 1_000_000.0) as u64;
+                    payment["below_min_fee"] = serde_json::Value::Bool(usd < min_micro);
+                }
+                if let Some(total) = body.get("total_price_usd_micro").and_then(|v| v.as_u64()) {
+                    payment["total_price_usd_micro"] = serde_json::Value::Number(total.into());
+                }
+                let has_tx = body.get("payment_tx").and_then(|v| v.as_str()).is_some();
+                let has_total = body.get("total_price_usd_micro").is_some();
+                payment["is_downpayment"] = serde_json::Value::Bool(has_tx && has_total);
+                content["_payment"] = payment;
+            }
+        }
     }
 
     Some(ChannelMessage {

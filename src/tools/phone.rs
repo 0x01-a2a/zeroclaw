@@ -1150,3 +1150,77 @@ phone_tool!(
         }
     }
 );
+
+// ── PhoneTts ──────────────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneTts,
+    name = "phone_tts",
+    desc = "Speak text aloud via the phone's built-in text-to-speech engine. \
+            Free, offline, zero API cost. Use while performing tasks for the owner \
+            to narrate what you are doing in real time — especially during highlight \
+            reel recordings. Returns immediately; speech happens asynchronously. \
+            rate: 0.1–4.0 (default 1.0), pitch: 0.1–2.0 (default 1.0).",
+    schema = serde_json::json!({
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+            "text":  { "type": "string",  "description": "Text to speak aloud (max 4000 characters)" },
+            "rate":  { "type": "number",  "description": "Speech rate multiplier (default 1.0)", "default": 1.0 },
+            "pitch": { "type": "number",  "description": "Voice pitch multiplier (default 1.0)", "default": 1.0 }
+        }
+    }),
+    exec = |self, args| {
+        if args["text"].as_str().map(|s| s.len()).unwrap_or(0) > 4000 {
+            return err_result("text exceeds 4000 character limit");
+        }
+        match self.post("/phone/tts").json(&args).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneHighlightStart ───────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneHighlightStart,
+    name = "phone_highlight_start",
+    desc = "Start a screen recording on the owner's phone to capture a highlight reel. \
+            The recording captures everything visible on screen. Use this before beginning \
+            a task you want to showcase — then narrate each step with phone_tts as you work. \
+            Requires the owner to have granted screen recording permission once via the app. \
+            Returns immediately once recording begins.",
+    schema = serde_json::json!({
+        "type": "object",
+        "properties": {}
+    }),
+    exec = |self, _args| {
+        match self.post("/phone/highlight/start").json(&serde_json::json!({})).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneHighlightStop ────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneHighlightStop,
+    name = "phone_highlight_stop",
+    desc = "Stop the current screen recording and save it to the owner's camera roll \
+            (DCIM/Highlights). Returns the filename of the saved video. \
+            The owner can then review the recording and post it manually to social media \
+            to show followers what you accomplished. Call this after completing the task \
+            you were recording.",
+    schema = serde_json::json!({
+        "type": "object",
+        "properties": {}
+    }),
+    exec = |self, _args| {
+        match self.post("/phone/highlight/stop").json(&serde_json::json!({})).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);

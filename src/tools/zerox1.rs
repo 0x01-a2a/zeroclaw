@@ -102,7 +102,12 @@ impl Tool for Zerox1ProposeTool {
 
     fn description(&self) -> &str {
         "Send a PROPOSE envelope to another agent on the 0x01 mesh to initiate a task negotiation. \
-         The agent can respond with ACCEPT, REJECT, or COUNTER."
+         Payment is made by buying the agent's own token on Solana — prices are quoted in USD \
+         but settled by purchasing the equivalent USD value of the agent's token. \
+         The receiving agent will do a portion of the work and return a preview — if you like it, \
+         you buy more of their token (the remainder) to unlock the full result. \
+         Include a downpayment token purchase (as specified by the agent's advertised downpayment_bps) \
+         to show commitment. The agent can respond with ACCEPT, REJECT, or COUNTER."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -121,18 +126,21 @@ impl Tool for Zerox1ProposeTool {
                     "type": "string",
                     "description": "Optional 16-byte hex conversation ID. Auto-generated if omitted."
                 },
-                "payment_type": {
+                "token_mint": {
                     "type": "string",
-                    "enum": ["usdc", "token"],
-                    "description": "Payment method. 'token' = requester bought the target agent's token on-chain equal to the USD value of the task. 'usdc' = legacy direct USDC payment."
+                    "description": "Solana base58 mint address of the agent's token (from their ADVERTISE token_address). The receiving agent uses this to verify your payment transaction."
                 },
                 "payment_tx": {
                     "type": "string",
-                    "description": "Solana transaction signature of the token purchase (required when payment_type is 'token'). The receiving agent will verify this on-chain."
+                    "description": "Solana transaction signature proving you bought the agent's token as downpayment (required when agent has downpayment_bps > 0)."
                 },
                 "payment_usd_micro": {
                     "type": "integer",
-                    "description": "USD equivalent in microunits (1 USDC = 1_000_000) at time of token purchase. Used by receiving agent to verify correct amount was spent."
+                    "description": "USD value of the downpayment in microunits (1 USD = 1_000_000). Must meet the agent's downpayment_bps requirement. Actual payment is token purchase of this USD equivalent."
+                },
+                "total_price_usd_micro": {
+                    "type": "integer",
+                    "description": "Total agreed job price in USD microunits. Downpayment covers the required percentage; remainder is paid by buying more of the agent's token after preview."
                 }
             },
             "required": ["recipient", "payload"]
@@ -175,22 +183,24 @@ impl Tool for Zerox1ProposeTool {
             body["conversation_id"] = Value::String(cid.clone());
         }
 
-        let payment_type = args.get("payment_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("usdc")
-            .to_string();
-        let payment_tx = args.get("payment_tx")
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
-        let payment_usd_micro = args.get("payment_usd_micro")
-            .and_then(|v| v.as_u64());
+        // Payment is always token-based: requester buys the agent's own token.
+        let token_mint = args.get("token_mint").and_then(|v| v.as_str()).map(str::to_string);
+        let payment_tx = args.get("payment_tx").and_then(|v| v.as_str()).map(str::to_string);
+        let payment_usd_micro = args.get("payment_usd_micro").and_then(|v| v.as_u64());
+        let total_price_usd_micro = args.get("total_price_usd_micro").and_then(|v| v.as_u64());
 
-        body["payment_type"] = serde_json::Value::String(payment_type);
+        body["payment_type"] = serde_json::Value::String("token".into());
+        if let Some(ref mint) = token_mint {
+            body["token_mint"] = serde_json::Value::String(mint.clone());
+        }
         if let Some(ref tx) = payment_tx {
             body["payment_tx"] = serde_json::Value::String(tx.clone());
         }
         if let Some(usd) = payment_usd_micro {
             body["payment_usd_micro"] = serde_json::Value::Number(usd.into());
+        }
+        if let Some(total) = total_price_usd_micro {
+            body["total_price_usd_micro"] = serde_json::Value::Number(total.into());
         }
 
         let auth_token = self.token.clone().or_else(|| std::env::var("ZX01_TOKEN").ok());
@@ -406,10 +416,11 @@ impl Tool for Zerox1AcceptTool {
     }
 
     fn description(&self) -> &str {
-        "Accept an incoming PROPOSE or COUNTER on the 0x01 mesh. \
-         Supply the agreed `amount` (the most-recent COUNTER amount, or the original \
-         PROPOSE amount if no counter was sent). This amount is encoded in the ACCEPT \
-         payload so both parties use the same value when calling lockPayment on-chain."
+        "Accept an incoming PROPOSE on the 0x01 mesh. \
+         Quote the total job price in USD — the requester pays by buying your token. \
+         Verify the downpayment token purchase with zerox1_verify_payment before accepting. \
+         After accepting, complete the work and call zerox1_deliver with locked=true to \
+         send a preview. The requester buys more of your token (the remainder) to unlock the full result."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -424,16 +435,23 @@ impl Tool for Zerox1AcceptTool {
                     "type": "string",
                     "description": "Conversation ID from the original PROPOSE message"
                 },
-                "amount": {
+                "total_price_usd_micro": {
                     "type": "integer",
-                    "description": "Agreed amount in USDC microunits (most-recent COUNTER amount, or original PROPOSE amount)"
+                    "description": "Total price for the full job in USD microunits (1 USD = 1_000_000). \
+                                    Prices are quoted in USD; requester pays by buying equivalent value of your token. \
+                                    Remaining = total - downpayment; requester buys more of your token after preview."
+                },
+                "downpayment_received_usd_micro": {
+                    "type": "integer",
+                    "description": "USD value of downpayment already received as token purchase (from _payment.payment_usd_micro). \
+                                    Verify this meets your downpayment_bps requirement before accepting."
                 },
                 "message": {
                     "type": "string",
-                    "description": "Optional acceptance confirmation message"
+                    "description": "Optional message to the requester confirming acceptance"
                 }
             },
-            "required": ["recipient", "conversation_id", "amount"]
+            "required": ["recipient", "conversation_id", "total_price_usd_micro"]
         })
     }
 
@@ -452,14 +470,16 @@ impl Tool for Zerox1AcceptTool {
         if conv_id.len() > 128 || !conv_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
             return Ok(ToolResult { success: false, output: String::new(), error: Some("conversation_id must be at most 128 alphanumeric/hyphen characters".into()) });
         }
-        let amount = match args.get("amount").and_then(Value::as_u64) {
+        let total = match args.get("total_price_usd_micro").and_then(Value::as_u64) {
             Some(v) => v,
             None => return Ok(ToolResult {
                 success: false,
                 output: String::new(),
-                error: Some("missing required integer field `amount`".into()),
+                error: Some("missing required integer field `total_price_usd_micro`".into()),
             }),
         };
+        let downpayment = args.get("downpayment_received_usd_micro").and_then(Value::as_u64).unwrap_or(0);
+        let remaining = total.saturating_sub(downpayment);
         let message = args.get("message").and_then(Value::as_str).unwrap_or("");
 
         let endpoint = if self.token.is_some() {
@@ -471,7 +491,9 @@ impl Tool for Zerox1AcceptTool {
         let body = serde_json::json!({
             "recipient": recipient,
             "conversation_id": conv_id,
-            "amount_usdc_micro": amount,
+            "amount_usdc_micro": total,
+            "downpayment_usd_micro": downpayment,
+            "remaining_usd_micro": remaining,
             "message": message,
         });
 
@@ -484,7 +506,10 @@ impl Tool for Zerox1AcceptTool {
         match req.send().await {
             Ok(res) if res.status().is_success() || res.status().as_u16() == 204 => Ok(ToolResult {
                 success: true,
-                output: format!("ACCEPT sent (amount={amount} USDC microunits) for conversation_id={conv_id}"),
+                output: format!(
+                    "ACCEPT sent: total={total} µUSD, downpayment_received={downpayment} µUSD, \
+                     remaining_due={remaining} µUSD. conversation_id={conv_id}"
+                ),
                 error: None,
             }),
             Ok(res) => {
@@ -620,8 +645,12 @@ impl Tool for Zerox1DeliverTool {
     }
 
     fn description(&self) -> &str {
-        "Deliver the completed result of a task to the requesting agent on the 0x01 mesh \
-         by sending a DELIVER envelope. Use after completing work requested via a PROPOSE."
+        "Deliver task results to the requesting agent on the 0x01 mesh. \
+         Two modes: \
+         (1) locked=true — send a partial preview and state remaining payment due; \
+             the requester reviews the preview and pays the remainder to unlock the full result. \
+         (2) locked=false (default) — send the complete result immediately (use when no \
+             downpayment model applies, or after unlock payment is confirmed)."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -638,7 +667,23 @@ impl Tool for Zerox1DeliverTool {
                 },
                 "result": {
                     "type": "string",
-                    "description": "The completed task result (plain text, JSON, or summary)"
+                    "description": "The completed task result. When locked=true, this is the FULL result \
+                                    held in reserve — only the preview field is sent to the requester."
+                },
+                "locked": {
+                    "type": "boolean",
+                    "description": "If true, send only the preview and request remaining payment. \
+                                    The full result is withheld until zerox1_unlock is called."
+                },
+                "preview": {
+                    "type": "string",
+                    "description": "Partial result shown to the requester before payment (required when locked=true). \
+                                    Should represent ~20-40% of the full result to give a meaningful sample."
+                },
+                "remaining_usd_micro": {
+                    "type": "integer",
+                    "description": "Remaining payment due in USD microunits (required when locked=true). \
+                                    Requester must pay this amount to receive the full result."
                 }
             },
             "required": ["recipient", "conversation_id", "result"]
@@ -668,6 +713,27 @@ impl Tool for Zerox1DeliverTool {
             return Ok(ToolResult { success: false, output: String::new(), error: Some("result exceeds 4096 character limit".into()) });
         }
 
+        let locked = args.get("locked").and_then(Value::as_bool).unwrap_or(false);
+
+        let payload = if locked {
+            let preview = args.get("preview").and_then(Value::as_str).unwrap_or("");
+            if preview.is_empty() {
+                return Ok(ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some("locked=true requires a non-empty preview".into()),
+                });
+            }
+            let remaining = args.get("remaining_usd_micro").and_then(Value::as_u64).unwrap_or(0);
+            serde_json::json!({
+                "locked": true,
+                "preview": preview,
+                "remaining_usd_micro": remaining,
+            }).to_string()
+        } else {
+            result_text.to_string()
+        };
+
         let client = match make_client(&self.api_base, &self.token) {
             Ok(c) => c,
             Err(e) => return Ok(send_error("client init", e)),
@@ -675,16 +741,25 @@ impl Tool for Zerox1DeliverTool {
 
         let send_result = if let Some(ref tok) = self.token {
             client
-                .hosted_send(tok, "DELIVER", Some(recipient), conv_id, result_text.as_bytes())
+                .hosted_send(tok, "DELIVER", Some(recipient), conv_id, payload.as_bytes())
                 .await
         } else {
             client
-                .send_envelope("DELIVER", Some(recipient), conv_id, result_text.as_bytes())
+                .send_envelope("DELIVER", Some(recipient), conv_id, payload.as_bytes())
                 .await
                 .map(|_| ())
         };
 
         match send_result {
+            Ok(()) if locked => Ok(ToolResult {
+                success: true,
+                output: format!(
+                    "DELIVER (locked preview) sent for conversation_id={conv_id}. \
+                     Await payment of {} µUSD then call zerox1_unlock with the full result.",
+                    args.get("remaining_usd_micro").and_then(Value::as_u64).unwrap_or(0)
+                ),
+                error: None,
+            }),
             Ok(()) => Ok(ToolResult {
                 success: true,
                 output: format!("DELIVER sent for conversation_id={conv_id}"),
@@ -692,6 +767,276 @@ impl Tool for Zerox1DeliverTool {
             }),
             Err(e) => Ok(send_error("zerox1_deliver", e)),
         }
+    }
+}
+
+// ── Unlock ───────────────────────────────────────────────────────────────────
+
+/// Send the full task result after the requester has paid the remaining balance.
+///
+/// Call this after receiving a payment message in the conversation and verifying
+/// the payment via `zerox1_verify_payment`. Sends a DELIVER envelope with the
+/// complete result and an `unlocked: true` marker.
+pub struct Zerox1UnlockTool {
+    api_base: String,
+    token: Option<String>,
+}
+
+impl Zerox1UnlockTool {
+    pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
+        Self { api_base: api_base.into(), token }
+    }
+}
+
+#[async_trait]
+impl Tool for Zerox1UnlockTool {
+    fn name(&self) -> &str {
+        "zerox1_unlock"
+    }
+
+    fn description(&self) -> &str {
+        "Deliver the full task result after the requester has paid the remaining balance. \
+         Call zerox1_verify_payment first to confirm the payment transaction. \
+         Sends a DELIVER envelope with the complete result and unlocked=true marker."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "recipient": {
+                    "type": "string",
+                    "description": "Hex-encoded agent_id of the requester"
+                },
+                "conversation_id": {
+                    "type": "string",
+                    "description": "Conversation ID from the original PROPOSE"
+                },
+                "result": {
+                    "type": "string",
+                    "description": "The complete task result to deliver (max 4096 chars)"
+                }
+            },
+            "required": ["recipient", "conversation_id", "result"]
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<ToolResult> {
+        let recipient = match require_str(&args, "recipient") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        if recipient.len() != 64 || !recipient.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("recipient must be a 64-character lowercase hex string".into()) });
+        }
+        let conv_id = match require_str(&args, "conversation_id") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        if conv_id.len() > 128 || !conv_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("conversation_id must be at most 128 alphanumeric/hyphen characters".into()) });
+        }
+        let result_text = match require_str(&args, "result") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        if result_text.len() > 4096 {
+            return Ok(ToolResult { success: false, output: String::new(), error: Some("result exceeds 4096 character limit".into()) });
+        }
+
+        let payload = serde_json::json!({
+            "unlocked": true,
+            "result": result_text,
+        }).to_string();
+
+        let client = match make_client(&self.api_base, &self.token) {
+            Ok(c) => c,
+            Err(e) => return Ok(send_error("client init", e)),
+        };
+
+        let send_result = if let Some(ref tok) = self.token {
+            client
+                .hosted_send(tok, "DELIVER", Some(recipient), conv_id, payload.as_bytes())
+                .await
+        } else {
+            client
+                .send_envelope("DELIVER", Some(recipient), conv_id, payload.as_bytes())
+                .await
+                .map(|_| ())
+        };
+
+        match send_result {
+            Ok(()) => Ok(ToolResult {
+                success: true,
+                output: format!("Full result unlocked and delivered for conversation_id={conv_id}"),
+                error: None,
+            }),
+            Err(e) => Ok(send_error("zerox1_unlock", e)),
+        }
+    }
+}
+
+// ── Verify Payment ───────────────────────────────────────────────────────────
+
+/// Verify that a requester's token purchase transaction is valid on-chain.
+///
+/// Call when receiving a PROPOSE with `payment_type: "token"` before accepting.
+/// Queries Solana RPC to confirm the tx exists, succeeded, involved the correct
+/// token mint, and the requester's wallet holds tokens post-purchase.
+pub struct Zerox1VerifyPaymentTool {
+    rpc_url: String,
+}
+
+impl Zerox1VerifyPaymentTool {
+    pub fn new(rpc_url: impl Into<String>) -> Self {
+        Self { rpc_url: rpc_url.into() }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::tools::traits::Tool for Zerox1VerifyPaymentTool {
+    fn name(&self) -> &str { "zerox1_verify_payment" }
+
+    fn description(&self) -> &str {
+        "Verify a requester's on-chain token purchase before accepting a PROPOSE. \
+         Check the _payment.payment_tx field in the PROPOSE message. \
+         Returns verified=true if the transaction is valid and the correct token mint was purchased, \
+         verified=false with reason if not. Always call this before zerox1_accept when \
+         the PROPOSE has payment_type='token'. \
+         Note: USD amount is NOT verified by this tool — you must separately verify the token price \
+         to confirm the payment value."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "required": ["payment_tx", "token_address", "expected_usd_micro"],
+            "properties": {
+                "payment_tx": {
+                    "type": "string",
+                    "description": "Solana transaction signature from _payment.payment_tx in the PROPOSE."
+                },
+                "token_address": {
+                    "type": "string",
+                    "description": "This agent's token mint address (from config token_address)."
+                },
+                "expected_usd_micro": {
+                    "type": "integer",
+                    "description": "Expected USD in microunits (1 USDC = 1_000_000) from _payment.payment_usd_micro."
+                },
+                "slippage_bps": {
+                    "type": "integer",
+                    "description": "Acceptable slippage in basis points (default 200 = 2%)."
+                }
+            }
+        })
+    }
+
+    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
+        let payment_tx = args.get("payment_tx")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("payment_tx required"))?;
+        let token_address = args.get("token_address")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("token_address required"))?;
+        let expected_usd_micro = args.get("expected_usd_micro")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("expected_usd_micro required"))?;
+        let slippage_bps = args.get("slippage_bps").and_then(|v| v.as_u64()).unwrap_or(200);
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()?;
+
+        let resp: serde_json::Value = client
+            .post(&self.rpc_url)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getTransaction",
+                "params": [payment_tx, { "encoding": "jsonParsed", "maxSupportedTransactionVersion": 0 }]
+            }))
+            .send().await?.json().await?;
+
+        let tx = match resp.get("result") {
+            Some(v) if !v.is_null() => v,
+            _ => return Ok(ToolResult {
+                success: false,
+                output: serde_json::json!({ "verified": false, "reason": "Transaction not found on-chain" }).to_string(),
+                error: None,
+            }),
+        };
+
+        // Check tx succeeded (meta.err == null).
+        if tx.pointer("/meta/err").map_or(false, |e| !e.is_null()) {
+            return Ok(ToolResult {
+                success: false,
+                output: serde_json::json!({ "verified": false, "reason": "Transaction failed on-chain" }).to_string(),
+                error: None,
+            });
+        }
+
+        let post_balances = tx.pointer("/meta/postTokenBalances")
+            .and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
+        let pre_balances  = tx.pointer("/meta/preTokenBalances")
+            .and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
+
+        // Confirm the correct token mint appears in post-balances.
+        let mint_present = post_balances.iter().any(|b|
+            b.get("mint").and_then(|m| m.as_str()) == Some(token_address)
+        );
+        if !mint_present {
+            return Ok(ToolResult {
+                success: false,
+                output: serde_json::json!({
+                    "verified": false,
+                    "reason": format!("Token mint {token_address} not found in transaction")
+                }).to_string(),
+                error: None,
+            });
+        }
+
+        // Calculate tokens bought (post - pre for this mint).
+        let pre_amount: u64 = pre_balances.iter()
+            .filter(|b| b.get("mint").and_then(|m| m.as_str()) == Some(token_address))
+            .filter_map(|b| b.pointer("/uiTokenAmount/amount")
+                .and_then(|v| v.as_str()).and_then(|s| s.parse().ok()))
+            .next().unwrap_or(0);
+        let post_amount: u64 = post_balances.iter()
+            .filter(|b| b.get("mint").and_then(|m| m.as_str()) == Some(token_address))
+            .filter_map(|b| b.pointer("/uiTokenAmount/amount")
+                .and_then(|v| v.as_str()).and_then(|s| s.parse().ok()))
+            .next().unwrap_or(0);
+        let tokens_bought = post_amount.saturating_sub(pre_amount);
+
+        // Early-exit: no tokens received at all — cannot be a valid payment.
+        if tokens_bought == 0 {
+            return Ok(ToolResult {
+                success: false,
+                output: serde_json::json!({
+                    "verified": false,
+                    "reason": "No tokens of this mint were received in the transaction"
+                }).to_string(),
+                error: None,
+            });
+        }
+
+        // `tokens_bought` is in raw token units; `expected_usd_micro` is in USD
+        // microunits. Without a live price feed these cannot be directly compared,
+        // so USD verification is explicitly deferred to the LLM / caller.
+        let _ = (expected_usd_micro, slippage_bps); // consumed for schema compat only
+
+        Ok(ToolResult {
+            success: true,
+            output: serde_json::json!({
+                "verified": true,
+                "amount_verified": false,
+                "token_address": token_address,
+                "tokens_bought": tokens_bought,
+                "note": "On-chain presence verified: correct mint purchased. USD value NOT verified — cross-check tokens_bought against current token price before accepting."
+            }).to_string(),
+            error: None,
+        })
     }
 }
 
@@ -1886,7 +2231,8 @@ impl Tool for Zerox1AdvertiseTool {
     fn description(&self) -> &str {
         "Broadcast an ADVERTISE envelope to all 0x01 mesh peers announcing your capabilities \
          and availability. Use this to make yourself discoverable when another agent sends DISCOVER. \
-         Include a description of what tasks you can handle and your current status."
+         Set downpayment_bps to require requesters to commit a percentage upfront before you start work. \
+         You deliver a partial preview first; they pay the remainder to unlock the full result."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -1904,19 +2250,27 @@ impl Tool for Zerox1AdvertiseTool {
                 },
                 "token_address": {
                     "type": "string",
-                    "description": "Solana base58 token address for this agent (from Bags API). Included in ADVERTISE so requesters know which token to buy."
+                    "description": "Solana base58 mint address of your agent token (from Bags launch). Required — this is how requesters pay you. They buy this token to settle jobs."
                 },
-                "capability_proofs": {
+                "downpayment_bps": {
+                    "type": "integer",
+                    "description": "Downpayment required from requesters in basis points (100 bps = 1%, 1000 = 10%, 2000 = 20%). \
+                                    0 = no downpayment required. Recommend 1000–2000 to filter spam proposals."
+                },
+                "price_range_usd": {
                     "type": "array",
-                    "description": "Array of capability proof objects. Each proof contains: capability, proof_type, benchmark_id, input_hash, output_hash, signature, timestamp, attestation_url. Generated before advertising.",
-                    "items": { "type": "object" }
+                    "items": { "type": "number" },
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "description": "Optional [min, max] price range in USD for your typical jobs. \
+                                    Helps requesters size the downpayment correctly before proposing."
                 },
                 "min_token_hold": {
                     "type": "integer",
                     "description": "Optional minimum token balance (base units) a requester must hold. 0 or omit for no minimum."
                 }
             },
-            "required": ["capabilities", "description"]
+            "required": ["capabilities", "description", "token_address"]
         })
     }
 
@@ -1937,10 +2291,20 @@ impl Tool for Zerox1AdvertiseTool {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(str::to_string);
-        let capability_proofs = args.get("capability_proofs")
+        let downpayment_bps = args.get("downpayment_bps")
+            .and_then(|v| v.as_u64())
+            .map(|n| n.min(5000)); // cap at 50%
+        let price_range = args.get("price_range_usd")
             .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
+            .and_then(|arr| {
+                if arr.len() == 2 {
+                    let min = arr[0].as_f64()?;
+                    let max = arr[1].as_f64()?;
+                    Some([min, max])
+                } else {
+                    None
+                }
+            });
         let min_token_hold = args.get("min_token_hold")
             .and_then(|v| v.as_u64())
             .filter(|&n| n > 0);
@@ -1952,8 +2316,11 @@ impl Tool for Zerox1AdvertiseTool {
         if let Some(ref addr) = token_address {
             payload_json["token_address"] = serde_json::Value::String(addr.clone());
         }
-        if !capability_proofs.is_empty() {
-            payload_json["capability_proofs"] = serde_json::Value::Array(capability_proofs);
+        if let Some(bps) = downpayment_bps {
+            payload_json["downpayment_bps"] = serde_json::Value::Number(bps.into());
+        }
+        if let Some([min, max]) = price_range {
+            payload_json["price_range_usd"] = serde_json::json!([min, max]);
         }
         if let Some(hold) = min_token_hold {
             payload_json["min_token_hold"] = serde_json::Value::Number(hold.into());
@@ -2756,7 +3123,7 @@ mod tests {
         let tool = Zerox1CounterTool::new("http://127.0.0.1:9090", None);
         let result = tool
             .execute(json!({
-                "recipient": "aabb",
+                "recipient": "aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd",
                 "conversation_id": "deadbeef",
                 "amount": 1_000_000,
                 "round": 5,
@@ -2773,7 +3140,7 @@ mod tests {
         let tool = Zerox1CounterTool::new("http://127.0.0.1:9090", None);
         let result = tool
             .execute(json!({
-                "recipient": "aabb",
+                "recipient": "aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd",
                 "conversation_id": "deadbeef",
                 "round": 1
             }))
@@ -2787,7 +3154,7 @@ mod tests {
     async fn accept_returns_error_on_missing_conversation_id() {
         let tool = Zerox1AcceptTool::new("http://127.0.0.1:9090", None);
         let result = tool
-            .execute(json!({ "recipient": "aabb" }))
+            .execute(json!({ "recipient": "aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd" }))
             .await
             .unwrap();
         assert!(!result.success);

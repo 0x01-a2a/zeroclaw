@@ -6299,6 +6299,19 @@ pub struct Zerox1Config {
     /// This is the agent's own rule — not enforced by the platform.
     #[serde(default)]
     pub min_token_hold: u64,
+    /// Solana RPC URL used by the payment-verification tool to call `getTransaction`.
+    /// Defaults to mainnet-beta if not set.
+    #[serde(default)]
+    pub solana_rpc_url: Option<String>,
+    /// Downpayment required from requesters in basis points (100 = 1%, 1000 = 10%, 2000 = 20%).
+    /// 0 = no downpayment required. Included in every ADVERTISE.
+    /// Agent delivers a partial preview first; requester pays remaining to unlock full result.
+    #[serde(default)]
+    pub downpayment_bps: u32,
+    /// Optional [min, max] price range in USD for typical jobs.
+    /// Helps requesters size the downpayment before proposing. Included in ADVERTISE.
+    #[serde(default)]
+    pub price_range_usd: Option<[f64; 2]>,
 }
 
 impl ChannelConfig for Zerox1Config {
