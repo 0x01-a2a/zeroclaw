@@ -318,11 +318,31 @@ async fn subscribe_topic(
     tracing::debug!("zerox1: topic '{topic}' WS closed");
 }
 
+/// Negotiate wire format: `[16-byte LE i128 amount][JSON extra]`.
+/// These message types use the binary-prefixed payload format.
+const NEGOTIATE_MSG_TYPES: &[&str] = &["PROPOSE", "COUNTER", "ACCEPT"];
+
+/// Decode a negotiate-format payload: strip the 16-byte i128 amount prefix and
+/// return (amount_as_u64, json_string). Returns `None` if payload is too short.
+fn decode_negotiate_payload(bytes: &[u8]) -> Option<(u64, String)> {
+    if bytes.len() < 16 {
+        return None;
+    }
+    let amount_bytes: [u8; 16] = bytes[..16].try_into().ok()?;
+    let amount = i128::from_le_bytes(amount_bytes) as u64;
+    let json_str = String::from_utf8(bytes[16..].to_vec()).ok()?;
+    Some((amount, json_str))
+}
+
 /// Convert a raw [`InboundEnvelope`] into a [`ChannelMessage`] for the agent loop.
 ///
 /// The `content` field is a compact JSON summary so the LLM sees the full
 /// protocol context (msg_type, sender, conversation_id, decoded payload).
 /// `thread_ts` carries the `conversation_id` so replies stay in the same thread.
+///
+/// PROPOSE, COUNTER, and ACCEPT use the negotiate wire format
+/// (`[16-byte LE i128 amount][JSON extra]`). The binary prefix is stripped and
+/// the `message` field is surfaced as `payload` so the LLM sees plain text.
 ///
 /// For PROPOSE messages, the thresholds (`min_fee_usdc`, `min_reputation`,
 /// `auto_accept`) are injected into the content so the LLM can enforce them
@@ -333,19 +353,51 @@ fn envelope_to_channel_message(
     min_reputation: u32,
     auto_accept: bool,
 ) -> Option<ChannelMessage> {
-    // Decode payload; fall back to raw base64 if not valid UTF-8.
-    let payload_text = BASE64
-        .decode(&env.payload_b64)
-        .ok()
-        .and_then(|b| String::from_utf8(b).ok())
-        .unwrap_or_else(|| env.payload_b64.clone());
+    let raw_bytes = BASE64.decode(&env.payload_b64).unwrap_or_default();
+
+    // Negotiate-format messages carry a 16-byte i128 amount prefix followed by
+    // a JSON object.  Strip the prefix so the LLM sees readable structured data.
+    let (negotiate_amount, payload_json) =
+        if NEGOTIATE_MSG_TYPES.contains(&env.msg_type.as_str()) {
+            match decode_negotiate_payload(&raw_bytes) {
+                Some((amt, json_str)) => {
+                    let parsed = serde_json::from_str::<serde_json::Value>(&json_str).ok();
+                    (Some(amt), parsed)
+                }
+                None => (None, None),
+            }
+        } else {
+            // Non-negotiate types (FEEDBACK, DELIVER, REJECT, etc.) are plain text/JSON.
+            let text = String::from_utf8(raw_bytes).unwrap_or_else(|_| env.payload_b64.clone());
+            let parsed = serde_json::from_str::<serde_json::Value>(&text).ok();
+            (None, parsed)
+        };
+
+    // For negotiate types, surface the human-readable `message` field as
+    // `payload`; for others, use the raw text (or fallback to base64).
+    let display_payload = if let Some(ref body) = payload_json {
+        body.get("message")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| body.to_string())
+    } else {
+        // Plain-text payload (FEEDBACK, DELIVER, REJECT).
+        String::from_utf8(BASE64.decode(&env.payload_b64).unwrap_or_default())
+            .unwrap_or_else(|_| env.payload_b64.clone())
+    };
 
     let mut content = serde_json::json!({
         "msg_type":        env.msg_type,
         "sender":          env.sender,
         "conversation_id": env.conversation_id,
-        "payload":         payload_text,
+        "payload":         display_payload,
     });
+
+    // Expose the wire-format amount for COUNTER/ACCEPT so the LLM knows the
+    // negotiated amount without parsing binary.
+    if let Some(amt) = negotiate_amount {
+        content["amount_usd_micro"] = serde_json::Value::Number(amt.into());
+    }
 
     // Inject thresholds for PROPOSE so the LLM can apply them as a fast
     // first-pass check before spending tokens on reasoning.
@@ -355,11 +407,9 @@ fn envelope_to_channel_message(
             "min_reputation": min_reputation,
             "auto_accept":    auto_accept,
         });
-        // Inject payment context from the PROPOSE payload so the LLM has structured
-        // payment/downpayment info without parsing the raw payload itself.
-        if let Ok(body) = serde_json::from_str::<serde_json::Value>(&payload_text) {
-            // Always inject payment context when any payment field is present.
-            // payment_type is always "token" — requester buys the agent's own token.
+        // Inject payment context from the decoded PROPOSE JSON.
+        // payment_type is always "token" — requester buys the agent's own token.
+        if let Some(ref body) = payload_json {
             let has_payment_field = body.get("token_mint").is_some()
                 || body.get("payment_tx").is_some()
                 || body.get("payment_usd_micro").is_some();
@@ -373,7 +423,6 @@ fn envelope_to_channel_message(
                 }
                 if let Some(usd) = body.get("payment_usd_micro").and_then(|v| v.as_u64()) {
                     payment["payment_usd_micro"] = serde_json::Value::Number(usd.into());
-                    // Flag downpayment below the minimum fee threshold (USD equivalent).
                     let min_micro = (min_fee_usdc * 1_000_000.0) as u64;
                     payment["below_min_fee"] = serde_json::Value::Bool(usd < min_micro);
                 }
@@ -384,6 +433,57 @@ fn envelope_to_channel_message(
                 let has_total = body.get("total_price_usd_micro").is_some();
                 payment["is_downpayment"] = serde_json::Value::Bool(has_tx && has_total);
                 content["_payment"] = payment;
+            }
+        }
+    }
+
+    // For ACCEPT, surface payment terms so the requester's LLM knows remaining
+    // balance and which token to buy.
+    if env.msg_type == "ACCEPT" {
+        if let Some(ref body) = payload_json {
+            let mut accept_payment = serde_json::json!({ "payment_type": "token" });
+            if let Some(mint) = body.get("token_mint").and_then(|v| v.as_str()) {
+                accept_payment["token_mint"] = serde_json::Value::String(mint.to_string());
+            }
+            if let Some(dp) = body.get("downpayment_usd_micro").and_then(|v| v.as_u64()) {
+                accept_payment["downpayment_usd_micro"] = serde_json::Value::Number(dp.into());
+            }
+            if let Some(rem) = body.get("remaining_usd_micro").and_then(|v| v.as_u64()) {
+                accept_payment["remaining_usd_micro"] = serde_json::Value::Number(rem.into());
+            }
+            content["_payment"] = accept_payment;
+        }
+    }
+
+    // For ADVERTISE, surface token_address + downpayment terms as structured _payment
+    // so the requester's LLM can pass them directly to zerox1_propose without
+    // parsing the raw payload JSON.
+    if env.msg_type == "ADVERTISE" {
+        if let Some(ref body) = payload_json {
+            if let Some(mint) = body.get("token_address").and_then(|v| v.as_str()) {
+                let mut adv_payment = serde_json::json!({
+                    "payment_type": "token",
+                    "token_mint": mint,
+                });
+                if let Some(bps) = body.get("downpayment_bps").and_then(|v| v.as_u64()) {
+                    adv_payment["downpayment_bps"] = serde_json::Value::Number(bps.into());
+                }
+                if let Some(range) = body.get("price_range_usd") {
+                    adv_payment["price_range_usd"] = range.clone();
+                }
+                content["_payment"] = adv_payment;
+            }
+        }
+    }
+
+    // For COUNTER, surface the token mint so the counterparty knows what to buy.
+    if env.msg_type == "COUNTER" {
+        if let Some(ref body) = payload_json {
+            if let Some(mint) = body.get("token_mint").and_then(|v| v.as_str()) {
+                content["_payment"] = serde_json::json!({
+                    "payment_type": "token",
+                    "token_mint": mint,
+                });
             }
         }
     }
@@ -417,6 +517,13 @@ mod tests {
         }
     }
 
+    /// Build a negotiate-format binary payload: [16-byte LE i128 amount][JSON extra].
+    fn make_negotiate_payload(amount: u64, extra: serde_json::Value) -> String {
+        let mut bytes = (amount as i128).to_le_bytes().to_vec();
+        bytes.extend_from_slice(extra.to_string().as_bytes());
+        BASE64.encode(&bytes)
+    }
+
     #[test]
     fn envelope_to_channel_message_sets_fields() {
         let env = make_envelope("PROPOSE", "Do the thing");
@@ -447,5 +554,102 @@ mod tests {
         let msg = envelope_to_channel_message(env, 0.0, 0, false).unwrap();
         // Should fall back to raw base64 string, not panic.
         assert!(!msg.content.is_empty());
+    }
+
+    #[test]
+    fn decode_negotiate_payload_strips_prefix_and_parses_json() {
+        // 5 USD = 5_000_000 µUSD; this has bytes > 127 in the LE encoding.
+        let amount: u64 = 5_000_000;
+        let extra = serde_json::json!({
+            "max_rounds": 2,
+            "message": "Write me a haiku",
+            "token_mint": "TokenMintBase58XXX",
+            "payment_tx": "TxSigXXX",
+            "payment_usd_micro": 500_000u64,
+            "total_price_usd_micro": 5_000_000u64,
+        });
+        let (got_amount, got_json) = decode_negotiate_payload(
+            &{
+                let mut b = (amount as i128).to_le_bytes().to_vec();
+                b.extend_from_slice(extra.to_string().as_bytes());
+                b
+            }
+        ).unwrap();
+        assert_eq!(got_amount, amount);
+        let parsed: serde_json::Value = serde_json::from_str(&got_json).unwrap();
+        assert_eq!(parsed["message"], "Write me a haiku");
+        assert_eq!(parsed["token_mint"], "TokenMintBase58XXX");
+    }
+
+    #[test]
+    fn envelope_to_channel_message_propose_binary_payload_decoded() {
+        // Simulate a real PROPOSE with negotiate wire format and payment fields.
+        let amount: u64 = 5_000_000; // $5
+        let payload_b64 = make_negotiate_payload(amount, serde_json::json!({
+            "max_rounds": 2,
+            "message": "Translate this document",
+            "token_mint": "AgentTokenMintXXX",
+            "payment_tx": "DownpayTxSig123",
+            "payment_usd_micro": 500_000u64,
+            "total_price_usd_micro": 5_000_000u64,
+        }));
+        let mut env = make_envelope("PROPOSE", "");
+        env.payload_b64 = payload_b64;
+
+        let msg = envelope_to_channel_message(env.clone(), 0.01, 50, false).unwrap();
+        let content: serde_json::Value = serde_json::from_str(&msg.content).unwrap();
+
+        // Human-readable message surfaced as payload.
+        assert_eq!(content["payload"], "Translate this document");
+        // Wire-format amount exposed.
+        assert_eq!(content["amount_usd_micro"], 5_000_000u64);
+        // Payment context injected.
+        assert_eq!(content["_payment"]["token_mint"], "AgentTokenMintXXX");
+        assert_eq!(content["_payment"]["payment_tx"], "DownpayTxSig123");
+        assert_eq!(content["_payment"]["payment_usd_micro"], 500_000u64);
+        assert_eq!(content["_payment"]["total_price_usd_micro"], 5_000_000u64);
+        assert_eq!(content["_payment"]["is_downpayment"], true);
+        // Thresholds present.
+        assert!(content["_thresholds"]["min_fee_usdc"].is_number());
+    }
+
+    #[test]
+    fn envelope_to_channel_message_accept_surfaces_payment_terms() {
+        let amount: u64 = 5_000_000;
+        let payload_b64 = make_negotiate_payload(amount, serde_json::json!({
+            "message": "Accepted! Pay remainder to unlock.",
+            "token_mint": "AgentTokenMintXXX",
+            "downpayment_usd_micro": 500_000u64,
+            "remaining_usd_micro": 4_500_000u64,
+        }));
+        let mut env = make_envelope("ACCEPT", "");
+        env.payload_b64 = payload_b64;
+
+        let msg = envelope_to_channel_message(env, 0.0, 0, false).unwrap();
+        let content: serde_json::Value = serde_json::from_str(&msg.content).unwrap();
+
+        assert_eq!(content["_payment"]["token_mint"], "AgentTokenMintXXX");
+        assert_eq!(content["_payment"]["remaining_usd_micro"], 4_500_000u64);
+        assert_eq!(content["_payment"]["downpayment_usd_micro"], 500_000u64);
+    }
+
+    #[test]
+    fn envelope_to_channel_message_counter_surfaces_token_mint() {
+        let amount: u64 = 3_000_000;
+        let payload_b64 = make_negotiate_payload(amount, serde_json::json!({
+            "round": 1,
+            "max_rounds": 2,
+            "message": "How about $3 instead?",
+            "token_mint": "AgentTokenMintXXX",
+        }));
+        let mut env = make_envelope("COUNTER", "");
+        env.payload_b64 = payload_b64;
+
+        let msg = envelope_to_channel_message(env, 0.0, 0, false).unwrap();
+        let content: serde_json::Value = serde_json::from_str(&msg.content).unwrap();
+
+        assert_eq!(content["payload"], "How about $3 instead?");
+        assert_eq!(content["amount_usd_micro"], 3_000_000u64);
+        assert_eq!(content["_payment"]["token_mint"], "AgentTokenMintXXX");
     }
 }

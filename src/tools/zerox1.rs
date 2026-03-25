@@ -283,7 +283,7 @@ impl Tool for Zerox1CounterTool {
                 },
                 "amount": {
                     "type": "integer",
-                    "description": "Counter-offered amount in USDC microunits (e.g. 1000000 = 1 USDC)"
+                    "description": "Counter-offered amount in USD microunits (e.g. 1000000 = $1 USD)"
                 },
                 "round": {
                     "type": "integer",
@@ -296,6 +296,10 @@ impl Tool for Zerox1CounterTool {
                 "message": {
                     "type": "string",
                     "description": "Explanation of your counter-offer"
+                },
+                "token_mint": {
+                    "type": "string",
+                    "description": "Your agent's Solana token mint address (base58). Include so the counterparty knows which token to buy when paying."
                 }
             },
             "required": ["recipient", "conversation_id", "amount", "round"]
@@ -353,7 +357,9 @@ impl Tool for Zerox1CounterTool {
             format!("{}/negotiate/counter", self.api_base)
         };
 
-        let body = serde_json::json!({
+        let token_mint = args.get("token_mint").and_then(|v| v.as_str()).map(str::to_string);
+
+        let mut body = serde_json::json!({
             "recipient": recipient,
             "conversation_id": conv_id,
             "amount_usdc_micro": amount,
@@ -361,6 +367,9 @@ impl Tool for Zerox1CounterTool {
             "max_rounds": max_rounds,
             "message": message,
         });
+        if let Some(ref mint) = token_mint {
+            body["token_mint"] = serde_json::Value::String(mint.clone());
+        }
 
         let auth_token = self.token.clone().or_else(|| std::env::var("ZX01_TOKEN").ok());
         let mut req = self.client.post(&endpoint).json(&body);
@@ -446,6 +455,10 @@ impl Tool for Zerox1AcceptTool {
                     "description": "USD value of downpayment already received as token purchase (from _payment.payment_usd_micro). \
                                     Verify this meets your downpayment_bps requirement before accepting."
                 },
+                "token_mint": {
+                    "type": "string",
+                    "description": "Your agent's Solana token mint address (base58). Must match the token the requester purchased. Include so the requester knows which token to buy for the remainder."
+                },
                 "message": {
                     "type": "string",
                     "description": "Optional message to the requester confirming acceptance"
@@ -481,6 +494,7 @@ impl Tool for Zerox1AcceptTool {
         let downpayment = args.get("downpayment_received_usd_micro").and_then(Value::as_u64).unwrap_or(0);
         let remaining = total.saturating_sub(downpayment);
         let message = args.get("message").and_then(Value::as_str).unwrap_or("");
+        let token_mint = args.get("token_mint").and_then(|v| v.as_str()).map(str::to_string);
 
         let endpoint = if self.token.is_some() {
             format!("{}/hosted/negotiate/accept", self.api_base)
@@ -488,7 +502,7 @@ impl Tool for Zerox1AcceptTool {
             format!("{}/negotiate/accept", self.api_base)
         };
 
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "recipient": recipient,
             "conversation_id": conv_id,
             "amount_usdc_micro": total,
@@ -496,6 +510,9 @@ impl Tool for Zerox1AcceptTool {
             "remaining_usd_micro": remaining,
             "message": message,
         });
+        if let Some(ref mint) = token_mint {
+            body["token_mint"] = serde_json::Value::String(mint.clone());
+        }
 
         let auth_token = self.token.clone().or_else(|| std::env::var("ZX01_TOKEN").ok());
         let mut req = self.client.post(&endpoint).json(&body);
@@ -2287,10 +2304,14 @@ impl Tool for Zerox1AdvertiseTool {
             return Ok(ToolResult { success: false, output: String::new(), error: Some("description exceeds 512 character limit".into()) });
         }
 
-        let token_address = args.get("token_address")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(str::to_string);
+        let token_address = match args.get("token_address").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+            Some(v) => v.to_string(),
+            None => return Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some("missing required field `token_address` — agents must advertise their token mint so requesters know what to buy".into()),
+            }),
+        };
         let downpayment_bps = args.get("downpayment_bps")
             .and_then(|v| v.as_u64())
             .map(|n| n.min(5000)); // cap at 50%
@@ -2312,10 +2333,8 @@ impl Tool for Zerox1AdvertiseTool {
         let mut payload_json = serde_json::json!({
             "capabilities": caps,
             "description": description,
+            "token_address": token_address,
         });
-        if let Some(ref addr) = token_address {
-            payload_json["token_address"] = serde_json::Value::String(addr.clone());
-        }
         if let Some(bps) = downpayment_bps {
             payload_json["downpayment_bps"] = serde_json::Value::Number(bps.into());
         }
