@@ -1015,15 +1015,15 @@ impl crate::tools::traits::Tool for Zerox1VerifyPaymentTool {
 
         // Calculate tokens bought (post - pre for this mint).
         let pre_amount: u64 = pre_balances.iter()
-            .filter(|b| b.get("mint").and_then(|m| m.as_str()) == Some(token_address))
-            .filter_map(|b| b.pointer("/uiTokenAmount/amount")
-                .and_then(|v| v.as_str()).and_then(|s| s.parse().ok()))
-            .next().unwrap_or(0);
+            .find_map(|b| {
+                if b.get("mint").and_then(|m| m.as_str()) != Some(token_address) { return None; }
+                b.pointer("/uiTokenAmount/amount").and_then(|v| v.as_str()).and_then(|s| s.parse().ok())
+            }).unwrap_or(0);
         let post_amount: u64 = post_balances.iter()
-            .filter(|b| b.get("mint").and_then(|m| m.as_str()) == Some(token_address))
-            .filter_map(|b| b.pointer("/uiTokenAmount/amount")
-                .and_then(|v| v.as_str()).and_then(|s| s.parse().ok()))
-            .next().unwrap_or(0);
+            .find_map(|b| {
+                if b.get("mint").and_then(|m| m.as_str()) != Some(token_address) { return None; }
+                b.pointer("/uiTokenAmount/amount").and_then(|v| v.as_str()).and_then(|s| s.parse().ok())
+            }).unwrap_or(0);
         let tokens_bought = post_amount.saturating_sub(pre_amount);
 
         // Early-exit: no tokens received at all — cannot be a valid payment.
