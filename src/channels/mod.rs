@@ -5205,6 +5205,8 @@ fn append_zerox1_channel_if_available(
         zx.min_fee_usdc,
         zx.min_reputation,
         zx.auto_accept,
+        zx.capabilities.clone(),
+        zx.token_address.clone(),
     ) {
         Ok(channel) => {
             channels.push(ConfiguredChannel {

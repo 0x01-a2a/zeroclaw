@@ -50,6 +50,10 @@ pub struct Zerox1Channel {
     /// When `true`, PROPOSE messages that pass fee/reputation thresholds are
     /// auto-accepted without an LLM call (an ACCEPT reply is sent immediately).
     auto_accept: bool,
+    /// Capabilities announced in periodic ADVERTISE broadcasts.
+    capabilities: Vec<String>,
+    /// Solana token mint address included in ADVERTISE (from Bags launch).
+    token_address: Option<String>,
 }
 
 impl Zerox1Channel {
@@ -58,6 +62,7 @@ impl Zerox1Channel {
     /// Supply `token` only when running in hosted-agent mode.
     /// Supply `api_secret` for the local node's `--api-secret` bearer token.
     /// Supply `topics` to subscribe to named gossipsub topics via `/ws/topics?topic=<slug>`.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         node_api_url: impl Into<String>,
         token: Option<String>,
@@ -66,13 +71,25 @@ impl Zerox1Channel {
         min_fee_usdc: f64,
         min_reputation: u32,
         auto_accept: bool,
+        capabilities: Vec<String>,
+        token_address: Option<String>,
     ) -> Result<Self> {
         let url = node_api_url.into();
         // In local mode (no hosted token), pass api_secret as the client token so
         // send_envelope includes "Authorization: Bearer <secret>" on POST /envelopes/send.
         let client_token = token.clone().or_else(|| api_secret.clone());
         let client = Zerox1Client::new(url, client_token)?;
-        Ok(Self { client, token, api_secret, topics, min_fee_usdc, min_reputation, auto_accept })
+        Ok(Self {
+            client,
+            token,
+            api_secret,
+            topics,
+            min_fee_usdc,
+            min_reputation,
+            auto_accept,
+            capabilities,
+            token_address,
+        })
     }
 }
 
@@ -140,6 +157,50 @@ impl Channel for Zerox1Channel {
             let tx_t = tx.clone();
             topic_tasks.spawn(async move {
                 subscribe_topic(&ws_base_t, secret_t.as_deref(), &topic_t, tx_t).await;
+            });
+        }
+
+        // ── Periodic re-advertise task ───────────────────────────────────────
+        // Sends an ADVERTISE envelope immediately on startup and then every 6 hours
+        // so the agent remains discoverable even after long idle periods.
+        {
+            let caps = self.capabilities.clone();
+            let tok = self.token.clone();
+            let adv_client = self.client.clone();
+            let token_address = self.token_address.clone();
+            topic_tasks.spawn(async move {
+                const INTERVAL_SECS: u64 = 6 * 60 * 60; // 6 hours
+                loop {
+                    let mut payload_json = serde_json::json!({
+                        "capabilities": caps,
+                        "description": "auto-advertise",
+                    });
+                    if let Some(ref addr) = token_address {
+                        payload_json["token_address"] = serde_json::Value::String(addr.clone());
+                    }
+                    let payload = payload_json.to_string();
+                    let conv_id = "00000000000000000000000000000000";
+
+                    let result = if let Some(ref hosted_tok) = tok {
+                        adv_client
+                            .hosted_send(hosted_tok, "ADVERTISE", None, conv_id, payload.as_bytes())
+                            .await
+                    } else {
+                        adv_client
+                            .send_envelope("ADVERTISE", None, conv_id, payload.as_bytes())
+                            .await
+                            .map(|_| ())
+                    };
+                    match result {
+                        Ok(()) => tracing::info!(
+                            "zerox1: periodic ADVERTISE sent ({} capabilities)",
+                            caps.len()
+                        ),
+                        Err(e) => tracing::warn!("zerox1: periodic ADVERTISE failed: {e}"),
+                    }
+
+                    tokio::time::sleep(tokio::time::Duration::from_secs(INTERVAL_SECS)).await;
+                }
             });
         }
 

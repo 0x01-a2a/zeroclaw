@@ -870,7 +870,15 @@ pub fn all_tools_with_runtime(
                 api_base.clone(),
                 token.clone(),
             )));
+            tool_arcs.push(Arc::new(zerox1::Zerox1LogTaskTool::new(
+                api_base.clone(),
+                token.clone(),
+            )));
             tool_arcs.push(Arc::new(zerox1::Zerox1AdvertiseTool::new(
+                api_base.clone(),
+                token.clone(),
+            )));
+            tool_arcs.push(Arc::new(zerox1::Zerox1PostBountyTool::new(
                 api_base.clone(),
                 token.clone(),
             )));

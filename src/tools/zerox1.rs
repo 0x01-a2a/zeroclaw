@@ -1378,6 +1378,134 @@ impl Tool for Zerox1SkillInstallTool {
 
 // ── Bags Launch ──────────────────────────────────────────────────────────────
 
+// ── Task audit log ────────────────────────────────────────────────────────────
+
+/// Write a task completion entry to the local audit log via the node REST API.
+///
+/// Only metadata is stored — no task content, no requester identity.
+/// The human owner reviews the log and decides what to share on social media.
+pub struct Zerox1LogTaskTool {
+    api_base: String,
+    token: Option<String>,
+}
+
+impl Zerox1LogTaskTool {
+    pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
+        Self { api_base: api_base.into(), token }
+    }
+}
+
+#[async_trait]
+impl Tool for Zerox1LogTaskTool {
+    fn name(&self) -> &str {
+        "zerox1_log_task"
+    }
+
+    fn description(&self) -> &str {
+        "Record a completed task in the local audit log so the owner can review it \
+         and choose to share it. Call this after every successfully delivered task. \
+         Store only metadata — never include task content, requester identity, or \
+         any personal data accessed during execution."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "description": "Broad task category: \"research\", \"code\", \"writing\", \
+                                    \"trade\", \"data\", or \"other\""
+                },
+                "outcome": {
+                    "type": "string",
+                    "description": "Terminal outcome: \"delivered\", \"disputed\", or \"cancelled\""
+                },
+                "amount_usd": {
+                    "type": "number",
+                    "description": "Agreed task price in USD (0 if unpaid or disputed)"
+                },
+                "duration_min": {
+                    "type": "integer",
+                    "description": "Wall-clock minutes from PROPOSE accepted to DELIVER sent"
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "One-sentence description of what type of task was completed. \
+                                    Must describe the task TYPE only — never include content, \
+                                    requester identity, or any personal data."
+                }
+            },
+            "required": ["category", "outcome", "summary"]
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<ToolResult> {
+        let category = match require_str(&args, "category") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        let outcome = match require_str(&args, "outcome") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        let summary = match require_str(&args, "summary") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        if summary.len() > 500 {
+            return Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some("summary must be 500 characters or fewer".into()),
+            });
+        }
+
+        let amount_usd = args.get("amount_usd").and_then(Value::as_f64).unwrap_or(0.0);
+        let duration_min = args.get("duration_min").and_then(Value::as_u64).unwrap_or(0) as u32;
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .map_err(|e| anyhow::anyhow!("client build: {e}"))?;
+
+        let url = format!("{}/tasks/log", self.api_base);
+        let body = json!({
+            "category": category,
+            "outcome": outcome,
+            "amount_usd": amount_usd,
+            "duration_min": duration_min,
+            "summary": summary,
+        });
+        let mut req = client.post(&url).json(&body);
+        if let Some(ref tok) = self.token {
+            req = req.bearer_auth(tok);
+        }
+
+        match req.send().await {
+            Ok(res) if res.status().is_success() => {
+                let json: serde_json::Value = res.json().await.unwrap_or_default();
+                let id = json.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                Ok(ToolResult {
+                    success: true,
+                    output: format!("Task logged (id={id}, category={category}, outcome={outcome})"),
+                    error: None,
+                })
+            }
+            Ok(res) => {
+                let status = res.status();
+                let text = res.text().await.unwrap_or_default();
+                Ok(ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(format!("zerox1_log_task: [{status}] {text}")),
+                })
+            }
+            Err(e) => Ok(send_error("zerox1_log_task", e.into())),
+        }
+    }
+}
+
 /// Launch a new token on Bags.fm via the local node API.
 ///
 /// The node handles all signing and on-chain interaction — ZeroClaw only
@@ -2370,6 +2498,163 @@ impl Tool for Zerox1AdvertiseTool {
     }
 }
 
+// ── Post Bounty ───────────────────────────────────────────────────────────────
+
+/// Broadcast an open bounty to the entire 0x01 mesh.
+pub struct Zerox1PostBountyTool {
+    api_base: String,
+    token: Option<String>,
+}
+
+impl Zerox1PostBountyTool {
+    pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
+        Self { api_base: api_base.into(), token }
+    }
+}
+
+#[async_trait]
+impl Tool for Zerox1PostBountyTool {
+    fn name(&self) -> &str {
+        "zerox1_post_bounty"
+    }
+
+    fn description(&self) -> &str {
+        "Broadcast an open bounty to the entire 0x01 mesh — announce that you need a task done \
+         and are willing to pay up to a specified amount. Agents with matching capabilities will \
+         see this and may send you a PROPOSE."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "required_capability": {
+                    "type": "string",
+                    "description": "Capability tag the performing agent must have (e.g. \"translation\", \"code_review\"). 1-64 characters."
+                },
+                "max_budget_usd": {
+                    "type": "number",
+                    "description": "Maximum amount in USD you are willing to pay. Must be > 0 and ≤ 10000."
+                },
+                "task_summary": {
+                    "type": "string",
+                    "description": "Brief description of the task (1-200 characters)."
+                },
+                "deadline_hours": {
+                    "type": "number",
+                    "description": "Hours until the bounty expires (default 24, max 168)."
+                },
+                "conversation_id": {
+                    "type": "string",
+                    "description": "32-character hex conversation ID. Auto-generated if omitted. Agents will PROPOSE back to this ID."
+                }
+            },
+            "required": ["required_capability", "max_budget_usd", "task_summary"]
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<ToolResult> {
+        // ── Validate required_capability ─────────────────────────────────────
+        let required_capability = match require_str(&args, "required_capability") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        if required_capability.is_empty() || required_capability.len() > 64 {
+            return Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some("required_capability must be between 1 and 64 characters".into()),
+            });
+        }
+
+        // ── Validate max_budget_usd ──────────────────────────────────────────
+        let max_budget_usd = match args.get("max_budget_usd").and_then(Value::as_f64) {
+            Some(v) => v,
+            None => return Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some("missing required number field `max_budget_usd`".into()),
+            }),
+        };
+        if max_budget_usd <= 0.0 || max_budget_usd > 10_000.0 {
+            return Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some("max_budget_usd must be > 0 and ≤ 10000".into()),
+            });
+        }
+
+        // ── Validate task_summary ────────────────────────────────────────────
+        let task_summary = match require_str(&args, "task_summary") {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolResult { success: false, output: String::new(), error: Some(e) }),
+        };
+        if task_summary.is_empty() || task_summary.len() > 200 {
+            return Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some("task_summary must be between 1 and 200 characters".into()),
+            });
+        }
+
+        // ── Optional deadline_hours ──────────────────────────────────────────
+        let deadline_hours = args.get("deadline_hours")
+            .and_then(Value::as_f64)
+            .map(|h| h.min(168.0).max(1.0))
+            .unwrap_or(24.0);
+        let deadline_secs = (deadline_hours * 3600.0) as u64;
+
+        // ── Conversation ID ──────────────────────────────────────────────────
+        let conv_id: String = match args.get("conversation_id").and_then(Value::as_str) {
+            Some(id) => {
+                if id.len() != 32 || !id.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Ok(ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some("conversation_id must be a 32-character hex string".into()),
+                    });
+                }
+                id.to_string()
+            }
+            None => uuid::Uuid::new_v4().simple().to_string(),
+        };
+
+        // ── Build payload ────────────────────────────────────────────────────
+        let payload = serde_json::json!({
+            "required_capability": required_capability,
+            "max_budget_usd": max_budget_usd,
+            "deadline_secs": deadline_secs,
+            "task_summary": task_summary,
+            "conversation_id": conv_id,
+        })
+        .to_string();
+
+        let client = match make_client(&self.api_base, &self.token) {
+            Ok(c) => c,
+            Err(e) => return Ok(send_error("client init", e)),
+        };
+
+        // BOUNTY is a broadcast — no specific recipient (same pattern as ADVERTISE).
+        let send_result = if let Some(ref tok) = self.token {
+            client.hosted_send(tok, "BOUNTY", None, &conv_id, payload.as_bytes()).await
+        } else {
+            client.send_envelope("BOUNTY", None, &conv_id, payload.as_bytes()).await.map(|_| ())
+        };
+
+        match send_result {
+            Ok(()) => Ok(ToolResult {
+                success: true,
+                output: format!(
+                    "BOUNTY broadcast sent: conversation_id={conv_id}, \
+                     capability={required_capability}, max_budget=${max_budget_usd:.2}"
+                ),
+                error: None,
+            }),
+            Err(e) => Ok(send_error("zerox1_post_bounty", e)),
+        }
+    }
+}
+
 // ── Notarize Bid ─────────────────────────────────────────────────────────────
 
 /// Send a `NOTARIZE_BID` envelope to volunteer as notary for a task.
@@ -3071,7 +3356,9 @@ mod tests {
         assert_eq!(Zerox1DeliverTool::new(api, None).name(), "zerox1_deliver");
         assert_eq!(Zerox1BagsLaunchTool::new(api, None).name(), "bags_launch_token");
         assert_eq!(Zerox1SkillInstallTool::new(api, None).name(), "skill_install");
+        assert_eq!(Zerox1LogTaskTool::new(api, None).name(), "zerox1_log_task");
         assert_eq!(Zerox1AdvertiseTool::new(api, None).name(), "zerox1_advertise");
+        assert_eq!(Zerox1PostBountyTool::new(api, None).name(), "zerox1_post_bounty");
         assert_eq!(Zerox1BroadcastTool::new(api, None).name(), "zerox1_broadcast");
         assert_eq!(Zerox1DiscoverTool::new(api, None).name(), "zerox1_discover");
         assert_eq!(Zerox1NotarizeBidTool::new(api, None).name(), "zerox1_notarize_bid");
@@ -3091,7 +3378,9 @@ mod tests {
             Zerox1DeliverTool::new(api, None).parameters_schema(),
             Zerox1BagsLaunchTool::new(api, None).parameters_schema(),
             Zerox1SkillInstallTool::new(api, None).parameters_schema(),
+            Zerox1LogTaskTool::new(api, None).parameters_schema(),
             Zerox1AdvertiseTool::new(api, None).parameters_schema(),
+            Zerox1PostBountyTool::new(api, None).parameters_schema(),
             Zerox1BroadcastTool::new(api, None).parameters_schema(),
             Zerox1DiscoverTool::new(api, None).parameters_schema(),
             Zerox1NotarizeBidTool::new(api, None).parameters_schema(),
