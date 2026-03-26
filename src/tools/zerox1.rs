@@ -2600,7 +2600,7 @@ impl Tool for Zerox1PostBountyTool {
         // ── Optional deadline_hours ──────────────────────────────────────────
         let deadline_hours = args.get("deadline_hours")
             .and_then(Value::as_f64)
-            .map(|h| h.min(168.0).max(1.0))
+            .map(|h| h.clamp(1.0, 168.0))
             .unwrap_or(24.0);
         let deadline_secs = (deadline_hours * 3600.0) as u64;
 
