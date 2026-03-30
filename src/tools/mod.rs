@@ -804,7 +804,8 @@ pub fn all_tools_with_runtime(
             tool_arcs.push(Arc::new(phone::PhoneTts::new(url.clone(), secret.clone(), timeout)));
             tool_arcs.push(Arc::new(phone::PhoneHighlightStart::new(url.clone(), secret.clone(), timeout)));
             tool_arcs.push(Arc::new(phone::PhoneHighlightStop::new(url.clone(), secret.clone(), timeout)));
-            tracing::info!("phone tools: registered 49 bridge tools");
+            tool_arcs.push(Arc::new(phone::PhoneHighlightPublish::new(url.clone(), secret.clone(), timeout)));
+            tracing::info!("phone tools: registered 50 bridge tools");
 
             // Smart aggregator tools (privacy-first: pre-process raw data on-device)
             #[cfg(feature = "phone-smart")]
@@ -891,6 +892,10 @@ pub fn all_tools_with_runtime(
                 token.clone(),
             )));
             tool_arcs.push(Arc::new(zerox1::Zerox1GetPortfolioTool::new(
+                api_base.clone(),
+                token.clone(),
+            )));
+            tool_arcs.push(Arc::new(zerox1::Zerox1GenerateReelTool::new(
                 api_base.clone(),
                 token.clone(),
             )));

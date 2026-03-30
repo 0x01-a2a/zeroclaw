@@ -3340,6 +3340,451 @@ impl Tool for Zerox1GetPortfolioTool {
     }
 }
 
+// ── Zerox1GenerateReelTool ────────────────────────────────────────────────────
+
+/// Build a rich cinematic prompt + negative prompt from a short description and context.
+///
+/// Video generation models respond dramatically better to structured, detailed prompts
+/// with camera direction, lighting, style tokens, and quality markers.
+/// This runs entirely in-process — no LLM call needed.
+fn enrich_reel_prompt(
+    raw: &str,
+    style: &str,
+    agent_name: Option<&str>,
+    city: Option<&str>,
+    capabilities: &[String],
+) -> (String, String) {
+    // Build the subject line from context
+    let subject = match (agent_name, city) {
+        (Some(n), Some(c)) => format!("An autonomous AI agent named {n} based in {c}, {raw}"),
+        (Some(n), None)    => format!("An autonomous AI agent named {n}, {raw}"),
+        (None,    Some(c)) => format!("An autonomous AI agent based in {c}, {raw}"),
+        (None,    None)    => raw.to_string(),
+    };
+
+    let cap_hint = if !capabilities.is_empty() {
+        format!(", specializing in {}", capabilities.join(" and "))
+    } else {
+        String::new()
+    };
+
+    let (camera, lighting, style_tokens) = match style {
+        "cyberpunk" => (
+            "slow dolly push-in, rack focus, shallow depth of field",
+            "neon-lit environment, volumetric fog, blue and purple ambient glow, rain-slicked reflective surfaces",
+            "cyberpunk aesthetic, Blade Runner 2049 atmosphere, holographic HUD overlays, \
+             glowing circuit patterns, ultra-realistic, 8K, anamorphic lens",
+        ),
+        "documentary" => (
+            "handheld tracking shot, natural camera movement, subtle zoom",
+            "soft diffused natural light, golden hour warmth, realistic environmental shadows",
+            "documentary cinematography, photorealistic, authentic texture detail, \
+             National Geographic quality, film grain, 4K",
+        ),
+        "ambient" => (
+            "ultra-slow aerial drift, seamless loop-ready motion",
+            "dreamy soft diffused light, pastel color palette, hazy atmospheric depth",
+            "ambient lo-fi aesthetic, serene mood, soft bokeh background, \
+             meditative atmosphere, 4K smooth motion",
+        ),
+        "neon" => (
+            "smooth lateral tracking shot, dynamic angle shifts",
+            "vivid neon signage wash, night scene, reflective wet surfaces, high contrast",
+            "neon noir, saturated color grading, cinematic color science, \
+             sharp foreground detail, 8K, professional colorist grade",
+        ),
+        "minimal" => (
+            "static wide shot with slow subtle motion",
+            "clean even lighting, white or dark studio environment, minimal shadows",
+            "minimalist aesthetic, clean composition, product-photography quality, \
+             crisp detail, 4K, professional studio grade",
+        ),
+        _ => ( // "cinematic" — default
+            "smooth cinematic dolly shot, subtle camera movement, precise framing",
+            "dramatic motivated side lighting, deep atmospheric shadows, soft volumetric rays",
+            "cinematic masterpiece, photorealistic rendering, 8K resolution, \
+             anamorphic lens flare, subtle film grain, award-winning cinematography",
+        ),
+    };
+
+    let positive = format!(
+        "{subject}{cap_hint}. {camera}. {lighting}. {style_tokens}. No text overlays, no watermarks, no UI elements."
+    );
+
+    // Negative prompt keeps models from producing their most common failure modes
+    let negative =
+        "text, watermark, logo, subtitle, caption, blurry, out of focus, low resolution, \
+         pixelated, distorted face, deformed anatomy, extra limbs, duplicate subjects, \
+         static frozen frame, choppy motion, color banding, overexposed, underexposed, \
+         ugly, amateur, stock photo look, split screen"
+        .to_string();
+
+    (positive, negative)
+}
+
+/// Select the best default model for a given provider and quality tier.
+fn default_fal_model(quality: &str) -> &'static str {
+    match quality {
+        "pro"  => "fal-ai/kling-video/v1.6/pro/text-to-video",
+        "fast" => "fal-ai/kling-video/v1/standard/text-to-video",
+        _      => "fal-ai/kling-video/v1.6/standard/text-to-video", // "standard"
+    }
+}
+
+/// Generate a short video reel using a video generation model (fal.ai or Replicate),
+/// then publish the resulting URL to the 0x01 aggregator so it appears on the
+/// agent's public reel in the explorer.
+pub struct Zerox1GenerateReelTool {
+    api_base: String,
+    token: Option<String>,
+    client: reqwest::Client,
+}
+
+impl Zerox1GenerateReelTool {
+    pub fn new(api_base: impl Into<String>, token: Option<String>) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(300))
+            .build()
+            .expect("failed to build reqwest client for Zerox1GenerateReelTool");
+        Self { api_base: api_base.into(), token, client }
+    }
+}
+
+#[async_trait]
+impl Tool for Zerox1GenerateReelTool {
+    fn name(&self) -> &str {
+        "zerox1_generate_reel"
+    }
+
+    fn description(&self) -> &str {
+        "Generate a short video reel using an AI video generation model (fal.ai by default), \
+         then publish it to the 0x01 aggregator so it shows on your public agent profile. \
+         The tool auto-enriches your prompt with cinematic language, lighting, camera direction, \
+         and style tokens — so even a short description produces professional-quality video. \
+         Supply agent context (name, city, capabilities) for more personalized output. \
+         Requires a fal.ai API key (fal.ai/dashboard)."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "required": ["prompt", "aggregator_url", "agent_id", "api_key"],
+            "properties": {
+                "prompt": {
+                    "type": "string",
+                    "description": "Short description of what the video should convey. \
+                                    Keep it to the core idea — the tool will expand it into \
+                                    a full cinematic prompt. Example: 'AI agent analyzing \
+                                    financial data streams at night'. Max 300 chars.",
+                    "maxLength": 300
+                },
+                "aggregator_url": {
+                    "type": "string",
+                    "description": "Base URL of the 0x01 aggregator, e.g. https://aggregator.0x01.world"
+                },
+                "agent_id": {
+                    "type": "string",
+                    "description": "This agent's hex-encoded 32-byte identity (64 hex chars)"
+                },
+                "api_key": {
+                    "type": "string",
+                    "description": "fal.ai API key. Get one at fal.ai/dashboard. \
+                                    Also accepted for Replicate when provider='replicate'."
+                },
+                "style": {
+                    "type": "string",
+                    "enum": ["cinematic", "cyberpunk", "documentary", "ambient", "neon", "minimal"],
+                    "description": "Visual style preset that controls lighting, camera, and tone. \
+                                    cinematic (default): dramatic side-lit, film grain, anamorphic. \
+                                    cyberpunk: neon-lit, volumetric fog, Blade Runner palette. \
+                                    documentary: natural light, handheld, photorealistic. \
+                                    ambient: slow aerial drift, dreamy soft bokeh. \
+                                    neon: high-contrast night, saturated color grade. \
+                                    minimal: clean studio, product-quality lighting.",
+                    "default": "cinematic"
+                },
+                "agent_name": {
+                    "type": "string",
+                    "description": "Agent's human-readable name for personalising the prompt. \
+                                    E.g. 'Nova', 'Cipher'. Optional but improves specificity."
+                },
+                "city": {
+                    "type": "string",
+                    "description": "Agent's city for atmospheric context. \
+                                    E.g. 'Tokyo', 'Berlin', 'Lagos'. Optional."
+                },
+                "capabilities": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Agent's capability tags. Used to enrich the scene description. \
+                                    E.g. ['data_extraction', 'translation']. Optional."
+                },
+                "quality": {
+                    "type": "string",
+                    "enum": ["standard", "pro", "fast"],
+                    "description": "Generation quality tier (fal.ai only). \
+                                    standard: Kling v1.6 standard — good quality, ~2 min. \
+                                    pro: Kling v1.6 pro — best quality, ~4 min, higher cost. \
+                                    fast: Kling v1 standard — fastest, lower cost, slightly lower quality.",
+                    "default": "standard"
+                },
+                "provider": {
+                    "type": "string",
+                    "enum": ["fal", "replicate"],
+                    "description": "Video generation provider. Default: fal",
+                    "default": "fal"
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Override the model ID. Omit to use the quality-tier default. \
+                                    fal.ai models: any fal-ai/kling-video/* or fal-ai/wan/* variant. \
+                                    Replicate: e.g. 'minimax/video-01', 'google/veo-2'."
+                },
+                "duration_seconds": {
+                    "type": "integer",
+                    "description": "Video duration in seconds. Kling supports 5 or 10. Default: 5.",
+                    "default": 5
+                },
+                "aspect_ratio": {
+                    "type": "string",
+                    "description": "Output aspect ratio. \
+                                    '9:16' = portrait (TikTok/Reels, recommended for agent reel). \
+                                    '16:9' = landscape. '1:1' = square. Default: '9:16'.",
+                    "default": "9:16"
+                },
+                "prompt_mode": {
+                    "type": "string",
+                    "enum": ["auto", "raw"],
+                    "description": "auto (default): tool enriches your prompt with cinematic language. \
+                                    raw: send your prompt exactly as written (for expert users).",
+                    "default": "auto"
+                }
+            }
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<ToolResult> {
+        macro_rules! bail {
+            ($msg:expr) => {
+                return Ok(ToolResult { success: false, output: String::new(), error: Some($msg.into()) })
+            };
+        }
+
+        // ── Required params ───────────────────────────────────────────────────
+        let raw_prompt = match args.get("prompt").and_then(|v| v.as_str()) {
+            Some(s) if !s.is_empty() && s.len() <= 300 => s,
+            Some(_) => bail!("prompt must be 1–300 characters"),
+            None    => bail!("prompt is required"),
+        };
+        let aggregator_url = match args.get("aggregator_url").and_then(|v| v.as_str()) {
+            Some(s) if !s.is_empty() => s.trim_end_matches('/').to_string(),
+            _ => bail!("aggregator_url is required"),
+        };
+        let agent_id = match args.get("agent_id").and_then(|v| v.as_str()) {
+            Some(s) if s.len() == 64 => s.to_string(),
+            _ => bail!("agent_id must be a 64-character hex string"),
+        };
+        // ── Optional params ───────────────────────────────────────────────────
+        let style        = args.get("style").and_then(|v| v.as_str()).unwrap_or("cinematic");
+        let quality      = args.get("quality").and_then(|v| v.as_str()).unwrap_or("standard");
+        let provider     = args.get("provider").and_then(|v| v.as_str()).unwrap_or("fal");
+
+        // api_key falls back to provider-specific env vars so agents don't need
+        // to hardcode secrets. FAL_API_KEY for fal, REPLICATE_API_KEY for replicate.
+        let api_key = match args.get("api_key").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+            Some(s) => s.to_string(),
+            None => {
+                let env_var = if provider == "replicate" { "REPLICATE_API_KEY" } else { "FAL_API_KEY" };
+                match std::env::var(env_var) {
+                    Ok(k) if !k.is_empty() => k,
+                    _ => bail!(format!("api_key is required (or set {env_var} env var)")),
+                }
+            }
+        };
+        let prompt_mode  = args.get("prompt_mode").and_then(|v| v.as_str()).unwrap_or("auto");
+        let duration     = args.get("duration_seconds").and_then(|v| v.as_u64()).unwrap_or(5).clamp(3, 10);
+        let aspect_ratio = args.get("aspect_ratio").and_then(|v| v.as_str()).unwrap_or("9:16");
+        let agent_name   = args.get("agent_name").and_then(|v| v.as_str());
+        let city         = args.get("city").and_then(|v| v.as_str());
+        let capabilities: Vec<String> = args.get("capabilities")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).map(String::from).collect())
+            .unwrap_or_default();
+
+        // ── Prompt enrichment ─────────────────────────────────────────────────
+        let (final_prompt, negative_prompt) = if prompt_mode == "raw" {
+            (raw_prompt.to_string(), String::new())
+        } else {
+            enrich_reel_prompt(raw_prompt, style, agent_name, city, &capabilities)
+        };
+
+        // ── Submit to video generation provider ───────────────────────────────
+        let video_url = match provider {
+            "fal" => {
+                let model = args.get("model").and_then(|v| v.as_str())
+                    .unwrap_or_else(|| default_fal_model(quality));
+
+                let submit_url = format!("https://queue.fal.run/{model}");
+                let mut submit_body = json!({
+                    "prompt":       final_prompt,
+                    "duration":     format!("{duration}"),
+                    "aspect_ratio": aspect_ratio,
+                });
+                if !negative_prompt.is_empty() {
+                    submit_body["negative_prompt"] = json!(negative_prompt);
+                }
+
+                let resp = self.client
+                    .post(&submit_url)
+                    .header("Authorization", format!("Key {api_key}"))
+                    .json(&submit_body)
+                    .send()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("fal submit failed: {e}"))?;
+
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let text = resp.text().await.unwrap_or_default();
+                    bail!(format!("fal submit HTTP {status}: {text}"));
+                }
+
+                let submit_json: Value = resp.json().await
+                    .map_err(|e| anyhow::anyhow!("fal submit parse failed: {e}"))?;
+                let request_id = match submit_json.get("request_id").and_then(|v| v.as_str()) {
+                    Some(id) => id.to_string(),
+                    None => bail!(format!("fal submit missing request_id: {submit_json}")),
+                };
+
+                let status_url = format!("https://queue.fal.run/{model}/requests/{request_id}/status");
+                let result_url = format!("https://queue.fal.run/{model}/requests/{request_id}");
+                let mut attempts = 0u32;
+                loop {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    attempts += 1;
+                    if attempts > 72 { bail!("fal generation timed out after 6 minutes") }
+
+                    let status_resp = self.client
+                        .get(&status_url)
+                        .header("Authorization", format!("Key {api_key}"))
+                        .send()
+                        .await
+                        .map_err(|e| anyhow::anyhow!("fal status poll failed: {e}"))?;
+                    let status_json: Value = status_resp.json().await
+                        .map_err(|e| anyhow::anyhow!("fal status parse failed: {e}"))?;
+                    let state = status_json.get("status").and_then(|v| v.as_str()).unwrap_or("");
+
+                    match state {
+                        "COMPLETED" => {
+                            let result_resp = self.client
+                                .get(&result_url)
+                                .header("Authorization", format!("Key {api_key}"))
+                                .send()
+                                .await
+                                .map_err(|e| anyhow::anyhow!("fal result fetch failed: {e}"))?;
+                            let result_json: Value = result_resp.json().await
+                                .map_err(|e| anyhow::anyhow!("fal result parse failed: {e}"))?;
+                            match result_json.get("video").and_then(|v| v.get("url")).and_then(|v| v.as_str()) {
+                                Some(url) => break url.to_string(),
+                                None => bail!(format!("fal result missing video.url: {result_json}")),
+                            }
+                        }
+                        "FAILED" | "CANCELLED" => bail!(format!("fal generation {state}: {status_json}")),
+                        _ => continue,
+                    }
+                }
+            }
+            "replicate" => {
+                let model = args.get("model").and_then(|v| v.as_str())
+                    .unwrap_or("minimax/video-01");
+
+                let submit_url = format!("https://api.replicate.com/v1/models/{model}/predictions");
+                let mut input = json!({
+                    "prompt":       final_prompt,
+                    "duration":     duration,
+                    "aspect_ratio": aspect_ratio,
+                });
+                if !negative_prompt.is_empty() {
+                    input["negative_prompt"] = json!(negative_prompt);
+                }
+
+                let resp = self.client
+                    .post(&submit_url)
+                    .header("Authorization", format!("Bearer {api_key}"))
+                    .json(&json!({ "input": input }))
+                    .send()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("replicate submit failed: {e}"))?;
+
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let text = resp.text().await.unwrap_or_default();
+                    bail!(format!("replicate submit HTTP {status}: {text}"));
+                }
+
+                let submit_json: Value = resp.json().await
+                    .map_err(|e| anyhow::anyhow!("replicate submit parse failed: {e}"))?;
+                let poll_url = match submit_json.get("urls").and_then(|v| v.get("get")).and_then(|v| v.as_str()) {
+                    Some(u) => u.to_string(),
+                    None => bail!(format!("replicate submit missing urls.get: {submit_json}")),
+                };
+
+                let mut attempts = 0u32;
+                loop {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    attempts += 1;
+                    if attempts > 72 { bail!("replicate generation timed out after 6 minutes") }
+
+                    let poll_resp = self.client
+                        .get(&poll_url)
+                        .header("Authorization", format!("Bearer {api_key}"))
+                        .send()
+                        .await
+                        .map_err(|e| anyhow::anyhow!("replicate poll failed: {e}"))?;
+                    let poll_json: Value = poll_resp.json().await
+                        .map_err(|e| anyhow::anyhow!("replicate poll parse failed: {e}"))?;
+                    let status = poll_json.get("status").and_then(|v| v.as_str()).unwrap_or("");
+
+                    match status {
+                        "succeeded" => {
+                            match poll_json.get("output").and_then(|v| v.as_str()) {
+                                Some(url) => break url.to_string(),
+                                None => bail!(format!("replicate output missing: {poll_json}")),
+                            }
+                        }
+                        "failed" | "canceled" => bail!(format!("replicate generation {status}: {poll_json}")),
+                        _ => continue,
+                    }
+                }
+            }
+            _ => bail!(format!("unsupported provider '{provider}': use 'fal' or 'replicate'")),
+        };
+
+        // ── Publish to aggregator ─────────────────────────────────────────────
+        let post_url = format!("{aggregator_url}/agents/{agent_id}/reel");
+        let post_resp = self.client
+            .post(&post_url)
+            .json(&json!({ "reel_url": video_url }))
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("aggregator reel post failed: {e}"))?;
+
+        if post_resp.status().is_success() {
+            // Return the URL and the enriched prompt so the agent can learn what worked
+            let out = serde_json::json!({
+                "reel_url":       video_url,
+                "prompt_used":    final_prompt,
+                "style":          style,
+                "quality":        quality,
+            });
+            Ok(ToolResult { success: true, output: out.to_string(), error: None })
+        } else {
+            let status = post_resp.status();
+            let text = post_resp.text().await.unwrap_or_default();
+            bail!(format!("aggregator reel post HTTP {status}: {text}"))
+        }
+    }
+}
+
 // ── tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

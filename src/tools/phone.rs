@@ -1224,3 +1224,51 @@ phone_tool!(
         }
     }
 );
+
+// ── PhoneHighlightPublish ─────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneHighlightPublish,
+    name = "phone_highlight_publish",
+    desc = "Upload a highlight reel video to the 0x01 aggregator so it appears on \
+            the agent's public profile. Call this after phone_highlight_stop returns \
+            a content_uri. Requires aggregator_url (the public aggregator base URL) \
+            and agent_id (this agent's hex identity). \
+            Returns { reel_url: \"/reels/...\" } on success.",
+    schema = serde_json::json!({
+        "type": "object",
+        "required": ["content_uri", "aggregator_url", "agent_id"],
+        "properties": {
+            "content_uri":     { "type": "string", "description": "MediaStore content URI returned by phone_highlight_stop" },
+            "aggregator_url":  { "type": "string", "description": "Base URL of the 0x01 aggregator, e.g. https://aggregator.0x01.world" },
+            "agent_id":        { "type": "string", "description": "This agent's hex-encoded 32-byte identity (64 hex chars)" }
+        }
+    }),
+    exec = |self, args| {
+        let content_uri = match args["content_uri"].as_str() {
+            Some(s) if !s.is_empty() => s.to_string(),
+            _ => return err_result("content_uri is required"),
+        };
+        let aggregator_url = match args["aggregator_url"].as_str() {
+            Some(s) if !s.is_empty() => s.to_string(),
+            _ => return err_result("aggregator_url is required"),
+        };
+        let agent_id = match args["agent_id"].as_str() {
+            Some(s) if !s.is_empty() => s.to_string(),
+            _ => return err_result("agent_id is required"),
+        };
+
+        match self.post("/phone/highlight/publish")
+            .json(&serde_json::json!({
+                "content_uri":    content_uri,
+                "aggregator_url": aggregator_url,
+                "agent_id":       agent_id,
+            }))
+            .send()
+            .await
+        {
+            Ok(r) => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
