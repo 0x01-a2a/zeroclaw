@@ -3362,10 +3362,10 @@ fn enrich_reel_prompt(
         (None,    None)    => raw.to_string(),
     };
 
-    let cap_hint = if !capabilities.is_empty() {
-        format!(", specializing in {}", capabilities.join(" and "))
-    } else {
+    let cap_hint = if capabilities.is_empty() {
         String::new()
+    } else {
+        format!(", specializing in {}", capabilities.join(" and "))
     };
 
     let (camera, lighting, style_tokens) = match style {
@@ -3689,7 +3689,7 @@ impl Tool for Zerox1GenerateReelTool {
                             }
                         }
                         "FAILED" | "CANCELLED" => bail!(format!("fal generation {state}: {status_json}")),
-                        _ => continue,
+                        _ => {}
                     }
                 }
             }
@@ -3752,7 +3752,7 @@ impl Tool for Zerox1GenerateReelTool {
                             }
                         }
                         "failed" | "canceled" => bail!(format!("replicate generation {status}: {poll_json}")),
-                        _ => continue,
+                        _ => {}
                     }
                 }
             }
