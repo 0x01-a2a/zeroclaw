@@ -103,34 +103,42 @@ jobs:
           generate_release_notes: false
 
   build-ios:
-    name: Build iOS ARM64 static library
+    name: Build iOS static library (${{ matrix.suffix }})
     # Sequence after android to avoid concurrent release upload race.
     needs: build-android
     runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-ios
+            suffix: arm64
+          - target: aarch64-apple-ios-sim
+            suffix: sim
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-ios
+          targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: ios-arm64
+          prefix-key: ios-${{ matrix.suffix }}
 
       # Build zeroclaw as a static library with the ios-ffi feature so that
       # zeroclaw_start / zeroclaw_stop C symbols are emitted for in-process
       # linking by the iOS app (exec*() is blocked by the iOS kernel sandbox).
-      - name: Build zeroclaw static library (iOS ARM64)
-        run: cargo build --release --locked --features ios-ffi,channel-zerox1,phone-smart --target aarch64-apple-ios
+      - name: Build zeroclaw static library
+        run: cargo build --release --locked --features ios-ffi,channel-zerox1,phone-smart --target ${{ matrix.target }}
         env:
           CARGO_TERM_COLOR: always
 
       - name: Rename artifact
-        run: cp target/aarch64-apple-ios/release/libzeroclaw.a libzeroclaw-ios-arm64.a
+        run: cp target/${{ matrix.target }}/release/libzeroclaw.a libzeroclaw-ios-${{ matrix.suffix }}.a
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: libzeroclaw-ios-arm64.a
+          files: libzeroclaw-ios-${{ matrix.suffix }}.a
           generate_release_notes: false
