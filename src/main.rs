@@ -1020,7 +1020,7 @@ async fn main() -> Result<()> {
             } else {
                 info!("🧠 Starting ZeroClaw Daemon on {host}:{port}");
             }
-            daemon::run(config, host, port).await
+            daemon::run(config, host, port, async { let _ = tokio::signal::ctrl_c().await; }).await
         }
 
         Commands::Status => {

@@ -751,65 +751,73 @@ pub fn all_tools_with_runtime(
                 secret.len()
             );
         } else {
+            let is_ios = phone_cfg.platform.trim().eq_ignore_ascii_case("ios");
+
+            // ── Cross-platform tools (iOS + Android) ──────────────────────────
             tool_arcs.push(Arc::new(phone::PhoneContactsRead::new(url.clone(), secret.clone(), timeout)));
             tool_arcs.push(Arc::new(phone::PhoneContactsWrite::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneSmsRead::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneSmsSend::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneContactsUpdate::new(url.clone(), secret.clone(), timeout)));
             tool_arcs.push(Arc::new(phone::PhoneLocation::new(url.clone(), secret.clone(), timeout)));
             tool_arcs.push(Arc::new(phone::PhoneCalendarRead::new(url.clone(), secret.clone(), timeout)));
             tool_arcs.push(Arc::new(phone::PhoneCalendarWrite::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneNotify::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneCallLog::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneClipboardRead::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneClipboardWrite::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneCameraCapture::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneAudioRecord::new(url.clone(), secret.clone(), timeout)));
-            // Extended tools — work on all flavors; bridge returns CAPABILITY_DISABLED if
-            // the permission was stripped by the flavor manifest.
-            tool_arcs.push(Arc::new(phone::PhoneNotificationsGet::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneNotificationsReply::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneNotificationsDismiss::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneCallsPending::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneCallsRespond::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneA11yScreenshot::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneA11yTree::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneA11yClick::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneA11yGlobal::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneDeviceInfo::new(url.clone(), secret.clone(), timeout)));
-            // Gap-fill tools — bridge endpoints that now have ZeroClaw wrappers
-            tool_arcs.push(Arc::new(phone::PhoneContactsUpdate::new(url.clone(), secret.clone(), timeout)));
             tool_arcs.push(Arc::new(phone::PhoneCalendarUpdate::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneDeviceInfo::new(url.clone(), secret.clone(), timeout)));
             tool_arcs.push(Arc::new(phone::PhoneMediaImages::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneNotificationsGet::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneNotificationsHistory::new(url.clone(), secret.clone(), timeout)));
             tool_arcs.push(Arc::new(phone::PhoneActivity::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneImuSnapshot::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneImuRecord::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneAppUsage::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneAlarmSet::new(url.clone(), secret.clone(), timeout)));
             tool_arcs.push(Arc::new(phone::PhoneTimezone::new(url.clone(), secret.clone(), timeout)));
             tool_arcs.push(Arc::new(phone::PhoneWifi::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneCarrier::new(url.clone(), secret.clone(), timeout)));
             tool_arcs.push(Arc::new(phone::PhoneBluetooth::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneAudioProfileGet::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneAudioProfileSet::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneVibrate::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneNotificationsHistory::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneCallsHistory::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneA11yAction::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneA11yVision::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneCarrier::new(url.clone(), secret.clone(), timeout)));
             tool_arcs.push(Arc::new(phone::PhoneHealthRead::new(url.clone(), secret.clone(), timeout)));
             tool_arcs.push(Arc::new(phone::PhoneWearableScan::new(url.clone(), secret.clone(), timeout)));
             tool_arcs.push(Arc::new(phone::PhoneWearableRead::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneRecoveryStatus::new(url.clone(), secret.clone(), timeout)));
-            // TTS + highlight reel tools (always registered; bridge returns error if grant missing)
             tool_arcs.push(Arc::new(phone::PhoneTts::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneHighlightStart::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneHighlightStop::new(url.clone(), secret.clone(), timeout)));
-            tool_arcs.push(Arc::new(phone::PhoneHighlightPublish::new(url.clone(), secret.clone(), timeout)));
-            tracing::info!("phone tools: registered 50 bridge tools");
+            tool_arcs.push(Arc::new(phone::PhoneRecoveryStatus::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneClipboardRead::new(url.clone(), secret.clone(), timeout)));
 
-            // Smart aggregator tools (privacy-first: pre-process raw data on-device)
+            // ── Android-only tools — not registered on iOS ─────────────────────
+            if !is_ios {
+                tool_arcs.push(Arc::new(phone::PhoneSmsRead::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneSmsSend::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneCallLog::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneCallsPending::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneCallsRespond::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneCallsHistory::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneNotify::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneNotificationsReply::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneNotificationsDismiss::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneA11yScreenshot::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneA11yTree::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneA11yClick::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneA11yGlobal::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneA11yAction::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneA11yVision::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneClipboardWrite::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneCameraCapture::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneAudioRecord::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneImuSnapshot::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneImuRecord::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneAppUsage::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneAlarmSet::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneAudioProfileGet::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneAudioProfileSet::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneVibrate::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneHighlightStart::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneHighlightStop::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneHighlightPublish::new(url.clone(), secret.clone(), timeout)));
+            }
+
+            if is_ios {
+                tracing::info!("phone tools: registered 22 bridge tools (iOS mode, 28 android-only skipped)");
+            } else {
+                tracing::info!("phone tools: registered 50 bridge tools");
+            }
+
+            // Smart aggregator tools — require SMS access, skip on iOS
             #[cfg(feature = "phone-smart")]
-            {
+            if !is_ios {
                 tool_arcs.push(Arc::new(phone_smart::PhoneDayBriefTool::new(url.clone(), secret.clone())));
                 tool_arcs.push(Arc::new(phone_smart::PhoneSmsBriefTool::new(url.clone(), secret.clone())));
                 tool_arcs.push(Arc::new(phone_smart::PhoneCommsSummaryTool::new(url.clone(), secret.clone())));

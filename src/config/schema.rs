@@ -417,6 +417,9 @@ pub struct PhoneConfig {
     /// HTTP request timeout in seconds.
     #[serde(default = "default_phone_timeout")]
     pub timeout_secs: u64,
+    /// Platform identifier. Set to "ios" by iOS NodeService to skip Android-only tools.
+    #[serde(default)]
+    pub platform: String,
 }
 
 fn default_phone_timeout() -> u64 {

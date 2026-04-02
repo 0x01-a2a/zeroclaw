@@ -8,7 +8,7 @@ use tokio::time::Duration;
 
 const STATUS_FLUSH_SECONDS: u64 = 5;
 
-pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
+pub async fn run(config: Config, host: String, port: u16, shutdown: impl Future<Output = ()>) -> Result<()> {
     // Pre-flight: check if port is already in use by another zeroclaw daemon
     if let Err(_e) = check_port_available(&host, port).await {
         // Port is in use - check if it's our daemon
@@ -108,7 +108,7 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
     println!("   Components: gateway, channels, heartbeat, scheduler");
     println!("   Ctrl+C to stop");
 
-    tokio::signal::ctrl_c().await?;
+    shutdown.await;
     crate::health::mark_component_error("daemon", "shutdown requested");
 
     for handle in &handles {

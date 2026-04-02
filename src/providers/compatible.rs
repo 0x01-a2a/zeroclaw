@@ -278,8 +278,8 @@ impl OpenAiCompatibleProvider {
             .cloned()
             .collect();
 
-        if let Some(first_user) = result.iter_mut().find(|m| m.role == "user") {
-            first_user.content = format!("{system_content}\n\n{}", first_user.content);
+        if let Some(last_user) = result.iter_mut().rfind(|m| m.role == "user") {
+            last_user.content = format!("{system_content}\n\n{}", last_user.content);
         } else {
             // No user message found: insert a synthetic user message with system content
             result.insert(0, ChatMessage::user(&system_content));
@@ -2975,23 +2975,26 @@ mod tests {
     }
 
     #[test]
-    fn flatten_system_messages_merges_into_first_user() {
+    fn flatten_system_messages_merges_into_latest_user() {
         let input = vec![
             ChatMessage::system("core policy"),
+            ChatMessage::user("earlier turn"),
             ChatMessage::assistant("ack"),
             ChatMessage::system("delivery rules"),
-            ChatMessage::user("hello"),
+            ChatMessage::user("latest turn"),
             ChatMessage::assistant("post-user"),
         ];
 
         let output = OpenAiCompatibleProvider::flatten_system_messages(&input);
-        assert_eq!(output.len(), 3);
-        assert_eq!(output[0].role, "assistant");
-        assert_eq!(output[0].content, "ack");
-        assert_eq!(output[1].role, "user");
-        assert_eq!(output[1].content, "core policy\n\ndelivery rules\n\nhello");
-        assert_eq!(output[2].role, "assistant");
-        assert_eq!(output[2].content, "post-user");
+        assert_eq!(output.len(), 4);
+        assert_eq!(output[0].role, "user");
+        assert_eq!(output[0].content, "earlier turn");
+        assert_eq!(output[1].role, "assistant");
+        assert_eq!(output[1].content, "ack");
+        assert_eq!(output[2].role, "user");
+        assert_eq!(output[2].content, "core policy\n\ndelivery rules\n\nlatest turn");
+        assert_eq!(output[3].role, "assistant");
+        assert_eq!(output[3].content, "post-user");
         assert!(output.iter().all(|m| m.role != "system"));
     }
 
@@ -3782,9 +3785,10 @@ mod tests {
     }
 
     #[test]
-    fn flatten_system_messages_merges_into_first_user_and_removes_system_roles() {
+    fn flatten_system_messages_merges_into_latest_user_and_removes_system_roles() {
         let messages = vec![
             ChatMessage::system("System A"),
+            ChatMessage::user("Older user turn"),
             ChatMessage::assistant("Earlier assistant turn"),
             ChatMessage::system("System B"),
             ChatMessage::user("User turn"),
@@ -3792,14 +3796,16 @@ mod tests {
         ];
 
         let flattened = OpenAiCompatibleProvider::flatten_system_messages(&messages);
-        assert_eq!(flattened.len(), 3);
-        assert_eq!(flattened[0].role, "assistant");
+        assert_eq!(flattened.len(), 4);
+        assert_eq!(flattened[0].role, "user");
+        assert_eq!(flattened[0].content, "Older user turn");
+        assert_eq!(flattened[1].role, "assistant");
         assert_eq!(
-            flattened[1].content,
+            flattened[2].content,
             "System A\n\nSystem B\n\nUser turn".to_string()
         );
-        assert_eq!(flattened[1].role, "user");
-        assert_eq!(flattened[2].role, "tool");
+        assert_eq!(flattened[2].role, "user");
+        assert_eq!(flattened[3].role, "tool");
         assert!(!flattened.iter().any(|m| m.role == "system"));
     }
 

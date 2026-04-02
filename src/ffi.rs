@@ -23,10 +23,11 @@
 #![allow(clippy::missing_safety_doc)]
 
 use std::ffi::CStr;
+use std::io::Write as _;
 use std::os::raw::c_char;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
@@ -43,6 +44,9 @@ static RUNTIME: Mutex<Option<tokio::runtime::Runtime>> = Mutex::new(None);
 /// Directory used for the `zeroclaw.busy` sentinel file.
 /// Set once during `zeroclaw_start`; cleared on `zeroclaw_stop`.
 static DATA_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Guard so tracing is only initialised once per process lifetime.
+static TRACING_INIT: OnceLock<()> = OnceLock::new();
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -92,6 +96,55 @@ fn write_busy_file_at(dir: &std::path::Path) {
 /// Remove `$data_dir/zeroclaw.busy` using an explicit directory path.
 fn delete_busy_file_at(dir: &std::path::Path) {
     let _ = std::fs::remove_file(dir.join("zeroclaw.busy"));
+}
+
+/// Append a timestamped line to `$data_dir/zeroclaw_ffi.log`.
+/// Used for diagnosing iOS-specific startup failures where stderr is not
+/// easily accessible.  Silently ignores I/O errors (best-effort).
+fn ffi_log(msg: &str) {
+    eprintln!("[zeroclaw-ffi] {msg}");
+    if let Some(ref dir) = *DATA_DIR.lock().unwrap() {
+        let path = dir.join("zeroclaw_ffi.log");
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let _ = writeln!(f, "[{ts}] {msg}");
+        }
+    }
+}
+
+/// Initialise a `tracing_subscriber` that writes to stderr (device log on iOS)
+/// and to `$data_dir/zeroclaw_ffi.log`.  Called once via `TRACING_INIT`.
+fn init_tracing(data_dir: &std::path::Path) {
+    let log_path = data_dir.join("zeroclaw_ffi.log");
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        Ok(file) => {
+            // Write to file; also mirror to stderr which appears in Xcode device log.
+            let _ = tracing_subscriber::fmt()
+                .with_writer(Mutex::new(file))
+                .with_max_level(tracing::Level::DEBUG)
+                .with_ansi(false)
+                .try_init();
+        }
+        Err(_) => {
+            // Fall back to stderr only.
+            let _ = tracing_subscriber::fmt()
+                .with_writer(std::io::stderr)
+                .with_max_level(tracing::Level::DEBUG)
+                .with_ansi(false)
+                .try_init();
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +200,19 @@ pub extern "C" fn zeroclaw_start(
     // Store the data_dir globally for use by write_busy_file / delete_busy_file.
     *DATA_DIR.lock().unwrap() = data_dir_opt.clone();
 
+    // ── Install tracing subscriber (once per process) ────────────────────────
+    if let Some(ref dir) = data_dir_opt {
+        TRACING_INIT.get_or_init(|| init_tracing(dir));
+    } else {
+        TRACING_INIT.get_or_init(|| {
+            let _ = tracing_subscriber::fmt()
+                .with_writer(std::io::stderr)
+                .with_max_level(tracing::Level::DEBUG)
+                .with_ansi(false)
+                .try_init();
+        });
+    }
+
     // ── Export API key as env var before Config::load_or_init ───────────────
     // `apply_env_overrides()` (called inside load_or_init) treats
     // ZEROCLAW_API_KEY as the highest-priority source, overriding any value
@@ -175,21 +241,25 @@ pub extern "C" fn zeroclaw_start(
     write_busy_file();
 
     rt.spawn(async move {
+        ffi_log("async task started — reading config");
+
         // Load config from the TOML file written by NodeService.swift.
         let contents = match tokio::fs::read_to_string(&config_path_str).await {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("[zeroclaw-ffi] failed to read config file {config_path_str}: {e}");
+                ffi_log(&format!("FATAL: failed to read config file {config_path_str}: {e}"));
                 IS_RUNNING.store(false, Ordering::SeqCst);
                 delete_busy_file();
                 return;
             }
         };
 
+        ffi_log(&format!("config file read ({} bytes)", contents.len()));
+
         let mut config: crate::config::Config = match toml::from_str(&contents) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("[zeroclaw-ffi] failed to parse config file: {e}");
+                ffi_log(&format!("FATAL: failed to parse config file: {e}"));
                 IS_RUNNING.store(false, Ordering::SeqCst);
                 delete_busy_file();
                 return;
@@ -206,8 +276,17 @@ pub extern "C" fn zeroclaw_start(
             }
         }
 
+        ffi_log(&format!("workspace_dir={}", config.workspace_dir.display()));
+
         // Apply env overrides (ZEROCLAW_API_KEY etc.) now that config is loaded.
         config.apply_env_overrides();
+
+        ffi_log(&format!(
+            "config ready: provider={:?} api_key={} workspace={}",
+            config.default_provider,
+            if config.api_key.is_some() { "SET" } else { "NONE" },
+            config.workspace_dir.display(),
+        ));
 
         // Override the node_api_url used by the zerox1 channel so it points to
         // the running zerox1-node instance on this device.
@@ -215,12 +294,20 @@ pub extern "C" fn zeroclaw_start(
             zerox1_cfg.node_api_url = node_api_url_str.clone();
         }
 
+        ffi_log("calling daemon::run on 127.0.0.1:9093");
+
         // Run the daemon on port 9093 (avoids clash with node:9090 / bridge:9092).
-        if let Err(e) = crate::daemon::run(config, "127.0.0.1".to_string(), 9093).await {
-            eprintln!("[zeroclaw-ffi] daemon exited with error: {e}");
+        // Use std::future::pending() as the shutdown signal: the in-process model
+        // never needs Ctrl+C — the daemon runs until zeroclaw_stop() drops the runtime.
+        if let Err(e) = crate::daemon::run(config, "127.0.0.1".to_string(), 9093,
+                                            std::future::pending::<()>()).await {
+            ffi_log(&format!("daemon::run error: {e}"));
+        } else {
+            ffi_log("daemon::run exited cleanly (runtime shutdown)");
         }
 
         IS_RUNNING.store(false, Ordering::SeqCst);
+        ffi_log("IS_RUNNING=false, busy file removed");
         // Daemon exited — remove the sentinel so KeepAliveService stops audio.
         delete_busy_file();
     });
