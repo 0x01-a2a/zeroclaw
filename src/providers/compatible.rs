@@ -382,7 +382,7 @@ impl OpenAiCompatibleProvider {
                     "function": {
                         "name": tool.name,
                         "description": tool.description,
-                        "parameters": tool.parameters
+                        "parameters": crate::tools::SchemaCleanr::clean_for_openai(tool.parameters.clone())
                     }
                 })
             })
@@ -1420,7 +1420,7 @@ impl OpenAiCompatibleProvider {
                         "function": {
                             "name": tool.name,
                             "description": tool.description,
-                            "parameters": tool.parameters,
+                            "parameters": crate::tools::SchemaCleanr::clean_for_openai(tool.parameters.clone()),
                         }
                     })
                 })

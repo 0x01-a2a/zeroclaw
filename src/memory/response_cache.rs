@@ -10,23 +10,48 @@ use chrono::{Duration, Local};
 use parking_lot::Mutex;
 use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// Response cache backed by a dedicated SQLite database.
+/// An in-memory hot cache entry for the two-tier response cache.
+struct InMemoryEntry {
+    response: String,
+    token_count: u32,
+    created_at: std::time::Instant,
+    accessed_at: std::time::Instant,
+}
+
+/// Two-tier response cache: in-memory LRU (hot) + SQLite (warm).
 ///
 /// Lives alongside `brain.db` as `response_cache.db` so it can be
 /// independently wiped without touching memories.
+///
+/// The hot cache avoids SQLite round-trips for frequently repeated prompts.
+/// On miss from hot cache, falls through to SQLite. On hit from SQLite,
+/// the entry is promoted to the hot cache.
 pub struct ResponseCache {
     conn: Mutex<Connection>,
     #[allow(dead_code)]
     db_path: PathBuf,
     ttl_minutes: i64,
     max_entries: usize,
+    hot_cache: Mutex<HashMap<String, InMemoryEntry>>,
+    hot_max_entries: usize,
 }
 
 impl ResponseCache {
     /// Open (or create) the response cache database.
     pub fn new(workspace_dir: &Path, ttl_minutes: u32, max_entries: usize) -> Result<Self> {
+        Self::with_hot_cache(workspace_dir, ttl_minutes, max_entries, 256)
+    }
+
+    /// Open (or create) the response cache database with a custom hot cache size.
+    pub fn with_hot_cache(
+        workspace_dir: &Path,
+        ttl_minutes: u32,
+        max_entries: usize,
+        hot_max_entries: usize,
+    ) -> Result<Self> {
         let db_dir = workspace_dir.join("memory");
         std::fs::create_dir_all(&db_dir)?;
         let db_path = db_dir.join("response_cache.db");
@@ -58,6 +83,8 @@ impl ResponseCache {
             db_path,
             ttl_minutes: i64::from(ttl_minutes),
             max_entries,
+            hot_cache: Mutex::new(HashMap::new()),
+            hot_max_entries,
         })
     }
 
@@ -76,35 +103,111 @@ impl ResponseCache {
     }
 
     /// Look up a cached response. Returns `None` on miss or expired entry.
+    ///
+    /// Two-tier lookup: checks the in-memory hot cache first, then falls
+    /// through to SQLite. On a SQLite hit the entry is promoted to hot cache.
+    #[allow(clippy::cast_sign_loss)]
     pub fn get(&self, key: &str) -> Result<Option<String>> {
-        let conn = self.conn.lock();
+        let ttl = std::time::Duration::from_secs(self.ttl_minutes as u64 * 60);
 
-        let now = Local::now();
-        let cutoff = (now - Duration::minutes(self.ttl_minutes)).to_rfc3339();
-
-        let mut stmt = conn.prepare(
-            "SELECT response FROM response_cache
-             WHERE prompt_hash = ?1 AND created_at > ?2",
-        )?;
-
-        let result: Option<String> = stmt.query_row(params![key, cutoff], |row| row.get(0)).ok();
-
-        if result.is_some() {
-            // Bump hit count and accessed_at
-            let now_str = now.to_rfc3339();
-            conn.execute(
-                "UPDATE response_cache
-                 SET accessed_at = ?1, hit_count = hit_count + 1
-                 WHERE prompt_hash = ?2",
-                params![now_str, key],
-            )?;
+        // Tier 1: hot cache (with TTL check)
+        {
+            let mut hot = self.hot_cache.lock();
+            if let Some(entry) = hot.get_mut(key) {
+                if entry.created_at.elapsed() > ttl {
+                    hot.remove(key);
+                } else {
+                    entry.accessed_at = std::time::Instant::now();
+                    let response = entry.response.clone();
+                    drop(hot);
+                    // Still bump SQLite hit count for accurate stats
+                    let now_str = Local::now().to_rfc3339();
+                    let conn = self.conn.lock();
+                    let _ = conn.execute(
+                        "UPDATE response_cache SET accessed_at = ?1, hit_count = hit_count + 1 WHERE prompt_hash = ?2",
+                        params![now_str, key],
+                    );
+                    return Ok(Some(response));
+                }
+            }
         }
 
-        Ok(result)
+        // Tier 2: SQLite
+        let result: Option<(String, u32)> = {
+            let conn = self.conn.lock();
+            let now = Local::now();
+            let cutoff = (now - Duration::minutes(self.ttl_minutes)).to_rfc3339();
+
+            let mut stmt = conn.prepare(
+                "SELECT response, token_count FROM response_cache
+                 WHERE prompt_hash = ?1 AND created_at > ?2",
+            )?;
+
+            let hit: Option<(String, u32)> = stmt
+                .query_row(params![key, cutoff], |row| Ok((row.get(0)?, row.get(1)?)))
+                .ok();
+
+            if hit.is_some() {
+                let now_str = now.to_rfc3339();
+                drop(stmt);
+                conn.execute(
+                    "UPDATE response_cache
+                     SET accessed_at = ?1, hit_count = hit_count + 1
+                     WHERE prompt_hash = ?2",
+                    params![now_str, key],
+                )?;
+            }
+            hit
+        };
+
+        if let Some((ref response, token_count)) = result {
+            // Promote to hot cache
+            let mut hot = self.hot_cache.lock();
+            let now_inst = std::time::Instant::now();
+            hot.insert(key.to_string(), InMemoryEntry {
+                response: response.clone(),
+                token_count,
+                created_at: now_inst,
+                accessed_at: now_inst,
+            });
+            // Evict oldest hot cache entries if over limit
+            if self.hot_max_entries > 0 && hot.len() > self.hot_max_entries {
+                if let Some(oldest_key) = hot
+                    .iter()
+                    .min_by_key(|(_, e)| e.accessed_at)
+                    .map(|(k, _)| k.clone())
+                {
+                    hot.remove(&oldest_key);
+                }
+            }
+        }
+
+        Ok(result.map(|(r, _)| r))
     }
 
     /// Store a response in the cache.
     pub fn put(&self, key: &str, model: &str, response: &str, token_count: u32) -> Result<()> {
+        // Insert into hot cache immediately
+        {
+            let mut hot = self.hot_cache.lock();
+            let now_inst = std::time::Instant::now();
+            hot.insert(key.to_string(), InMemoryEntry {
+                response: response.to_string(),
+                token_count,
+                created_at: now_inst,
+                accessed_at: now_inst,
+            });
+            if self.hot_max_entries > 0 && hot.len() > self.hot_max_entries {
+                if let Some(oldest_key) = hot
+                    .iter()
+                    .min_by_key(|(_, e)| e.accessed_at)
+                    .map(|(k, _)| k.clone())
+                {
+                    hot.remove(&oldest_key);
+                }
+            }
+        }
+
         let conn = self.conn.lock();
 
         let now = Local::now().to_rfc3339();
@@ -163,8 +266,8 @@ impl ResponseCache {
 
     /// Wipe the entire cache (useful for `zeroclaw cache clear`).
     pub fn clear(&self) -> Result<usize> {
+        self.hot_cache.lock().clear();
         let conn = self.conn.lock();
-
         let affected = conn.execute("DELETE FROM response_cache", [])?;
         Ok(affected)
     }

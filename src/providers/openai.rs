@@ -308,6 +308,22 @@ impl OpenAiProvider {
     fn http_client(&self) -> Client {
         crate::config::build_runtime_proxy_client_with_timeouts("provider.openai", 120, 10)
     }
+
+    /// Adjust temperature for models that have specific requirements.
+    /// Some OpenAI models (like o1, o3, o4, gpt-5 family) only accept temperature=1.0.
+    fn adjust_temperature_for_model(model: &str, requested_temperature: f64) -> f64 {
+        // Models that require temperature=1.0
+        let requires_fixed_temperature = model.starts_with("o1")
+            || model.starts_with("o3")
+            || model.starts_with("o4")
+            || model.starts_with("gpt-5")
+            || model == "chatgpt-4o-latest";
+        if requires_fixed_temperature {
+            1.0
+        } else {
+            requested_temperature
+        }
+    }
 }
 
 #[async_trait]
@@ -340,7 +356,7 @@ impl Provider for OpenAiProvider {
         let request = ChatRequest {
             model: model.to_string(),
             messages,
-            temperature,
+            temperature: Self::adjust_temperature_for_model(model, temperature),
             max_tokens: self.max_tokens_override,
         };
 
@@ -380,7 +396,7 @@ impl Provider for OpenAiProvider {
         let native_request = NativeChatRequest {
             model: model.to_string(),
             messages: Self::convert_messages(request.messages),
-            temperature,
+            temperature: Self::adjust_temperature_for_model(model, temperature),
             max_tokens: self.max_tokens_override,
             tool_choice: tools.as_ref().map(|_| "auto".to_string()),
             tools,
@@ -449,7 +465,7 @@ impl Provider for OpenAiProvider {
         let native_request = NativeChatRequest {
             model: model.to_string(),
             messages: Self::convert_messages(messages),
-            temperature,
+            temperature: Self::adjust_temperature_for_model(model, temperature),
             max_tokens: self.max_tokens_override,
             tool_choice: native_tools.as_ref().map(|_| "auto".to_string()),
             tools: native_tools,

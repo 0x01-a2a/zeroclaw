@@ -14,7 +14,7 @@ use rust_embed::Embed;
 struct WebAssets;
 
 /// Serve static files from `/_app/*` path
-pub async fn handle_static(uri: Uri) -> impl IntoResponse {
+pub fn handle_static(uri: Uri) -> impl IntoResponse {
     let path = uri.path().strip_prefix("/_app/").unwrap_or(uri.path());
 
     serve_embedded_file(path)

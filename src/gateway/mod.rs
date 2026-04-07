@@ -854,9 +854,6 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         .merge(api_router)
         // ── WebSocket agent chat ──
         .route("/ws/chat", get(ws::handle_ws_chat))
-        // ── Static assets (web dashboard — desktop only) ──
-        #[cfg(not(any(target_os = "ios", target_os = "android")))]
-        .route("/_app/{*path}", get(static_files::handle_static))
         // ── Config PUT with larger body limit ──
         .merge(config_put_router)
         .with_state(state)

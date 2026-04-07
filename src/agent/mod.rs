@@ -1,6 +1,7 @@
 #[allow(clippy::module_inception)]
 pub mod agent;
 pub mod classifier;
+pub(crate) mod cost;
 pub mod dispatcher;
 pub mod loop_;
 pub mod memory_loader;
