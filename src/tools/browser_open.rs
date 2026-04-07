@@ -484,30 +484,35 @@ async fn open_in_edge(url: &str) -> anyhow::Result<()> {
 
 // Unsupported platform
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+#[allow(clippy::unused_async)]
 async fn open_in_brave(url: &str) -> anyhow::Result<()> {
     let _ = url;
     anyhow::bail!("browser_open is not supported on this OS");
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+#[allow(clippy::unused_async)]
 async fn open_in_chrome(url: &str) -> anyhow::Result<()> {
     let _ = url;
     anyhow::bail!("browser_open is not supported on this OS");
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+#[allow(clippy::unused_async)]
 async fn open_in_firefox(url: &str) -> anyhow::Result<()> {
     let _ = url;
     anyhow::bail!("browser_open is not supported on this OS");
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+#[allow(clippy::unused_async)]
 async fn open_in_edge(url: &str) -> anyhow::Result<()> {
     let _ = url;
     anyhow::bail!("browser_open is not supported on this OS");
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+#[allow(clippy::unused_async)]
 async fn open_in_default(url: &str) -> anyhow::Result<()> {
     let _ = url;
     anyhow::bail!("browser_open is not supported on this OS");

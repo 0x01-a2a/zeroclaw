@@ -643,6 +643,7 @@ fn mask_sensitive_fields(config: &crate::config::Config) -> crate::config::Confi
         mask_required_secret(&mut nextcloud.app_token);
         mask_optional_secret(&mut nextcloud.webhook_secret);
     }
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     if let Some(email) = masked.channels_config.email.as_mut() {
         mask_required_secret(&mut email.password);
     }
@@ -817,6 +818,7 @@ fn restore_masked_sensitive_fields(
         restore_required_secret(&mut incoming_ch.app_token, &current_ch.app_token);
         restore_optional_secret(&mut incoming_ch.webhook_secret, &current_ch.webhook_secret);
     }
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     if let (Some(incoming_ch), Some(current_ch)) = (
         incoming.channels_config.email.as_mut(),
         current.channels_config.email.as_ref(),
@@ -1005,9 +1007,12 @@ mod tests {
             tenant_id: Some("tenant-1".to_string()),
             allowed_numbers: vec!["*".to_string()],
         });
-        let mut email = crate::channels::email_channel::EmailConfig::default();
-        email.password = "email-real-password".to_string();
-        cfg.channels_config.email = Some(email);
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
+        {
+            let mut email = crate::channels::email_channel::EmailConfig::default();
+            email.password = "email-real-password".to_string();
+            cfg.channels_config.email = Some(email);
+        }
         cfg.channels_config.feishu = Some(crate::config::FeishuConfig {
             app_id: "cli_app_id".to_string(),
             app_secret: "feishu-real-secret".to_string(),
@@ -1113,9 +1118,12 @@ mod tests {
             tenant_id: Some("tenant-1".to_string()),
             allowed_numbers: vec!["*".to_string()],
         });
-        let mut email = crate::channels::email_channel::EmailConfig::default();
-        email.password = "email-real-password".to_string();
-        current.channels_config.email = Some(email);
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
+        {
+            let mut email = crate::channels::email_channel::EmailConfig::default();
+            email.password = "email-real-password".to_string();
+            current.channels_config.email = Some(email);
+        }
         current.channels_config.feishu = Some(crate::config::FeishuConfig {
             app_id: "cli_app_id".to_string(),
             app_secret: "feishu-real-secret".to_string(),

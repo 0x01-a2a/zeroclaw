@@ -4216,6 +4216,21 @@ pub struct CustomTunnelConfig {
 
 // ── Channels ─────────────────────────────────────────────────────
 
+/// Mobile stub for EmailConfig — email channel is unavailable on iOS/Android.
+#[cfg(any(target_os = "ios", target_os = "android"))]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct MobileEmailConfigStub {}
+
+#[cfg(any(target_os = "ios", target_os = "android"))]
+impl crate::config::traits::ChannelConfig for MobileEmailConfigStub {
+    fn name() -> &'static str {
+        "email"
+    }
+    fn desc() -> &'static str {
+        "Email channel (not available on this platform)"
+    }
+}
+
 struct ConfigWrapper<T: ChannelConfig>(std::marker::PhantomData<T>);
 
 impl<T: ChannelConfig> ConfigWrapper<T> {
@@ -4275,7 +4290,7 @@ pub struct ChannelsConfig {
     #[cfg(not(any(target_os = "ios", target_os = "android")))]
     pub email: Option<crate::channels::email_channel::EmailConfig>,
     #[cfg(any(target_os = "ios", target_os = "android"))]
-    pub email: Option<()>,
+    pub email: Option<MobileEmailConfigStub>,
     /// IRC channel configuration.
     pub irc: Option<IrcConfig>,
     /// Lark channel configuration.
