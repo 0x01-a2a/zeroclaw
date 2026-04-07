@@ -52,7 +52,10 @@ use execution::{
 };
 #[cfg(test)]
 use history::{apply_compaction_summary, build_compaction_transcript};
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 use history::{auto_compact_history, trim_history};
+#[cfg(all(test, any(target_os = "ios", target_os = "android")))]
+use history::trim_history;
 #[allow(unused_imports)]
 use parsing::{
     default_param_for_tool, detect_tool_call_parse_issue, extract_json_values, map_tool_name_alias,
@@ -2634,6 +2637,7 @@ pub async fn run(
     let cost_enforcement_context =
         create_cost_enforcement_context(&config.cost, &config.workspace_dir);
 
+    #[allow(unused_assignments)]
     let mut final_output = String::new();
 
     if let Some(msg) = message {

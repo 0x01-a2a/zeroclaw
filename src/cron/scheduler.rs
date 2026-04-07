@@ -2,8 +2,10 @@
 use crate::channels::LarkChannel;
 #[cfg(feature = "channel-matrix")]
 use crate::channels::MatrixChannel;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+use crate::channels::EmailChannel;
 use crate::channels::{
-    Channel, DingTalkChannel, DiscordChannel, EmailChannel, MattermostChannel, NapcatChannel,
+    Channel, DingTalkChannel, DiscordChannel, MattermostChannel, NapcatChannel,
     QQChannel, SendMessage, SlackChannel, TelegramChannel, WhatsAppChannel,
 };
 use crate::config::Config;
@@ -483,13 +485,20 @@ pub(crate) async fn deliver_announcement(
             }
         }
         "email" => {
-            let email = config
-                .channels_config
-                .email
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("email channel not configured"))?;
-            let channel = EmailChannel::new(email.clone());
-            channel.send(&SendMessage::new(output, target)).await?;
+            #[cfg(not(any(target_os = "ios", target_os = "android")))]
+            {
+                let email = config
+                    .channels_config
+                    .email
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("email channel not configured"))?;
+                let channel = EmailChannel::new(email.clone());
+                channel.send(&SendMessage::new(output, target)).await?;
+            }
+            #[cfg(any(target_os = "ios", target_os = "android"))]
+            {
+                anyhow::bail!("email delivery channel is not supported on mobile");
+            }
         }
         "matrix" => {
             #[cfg(feature = "channel-matrix")]

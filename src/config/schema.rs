@@ -4272,7 +4272,10 @@ pub struct ChannelsConfig {
     /// Nextcloud Talk bot channel configuration.
     pub nextcloud_talk: Option<NextcloudTalkConfig>,
     /// Email channel configuration.
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     pub email: Option<crate::channels::email_channel::EmailConfig>,
+    #[cfg(any(target_os = "ios", target_os = "android"))]
+    pub email: Option<()>,
     /// IRC channel configuration.
     pub irc: Option<IrcConfig>,
     /// Lark channel configuration.

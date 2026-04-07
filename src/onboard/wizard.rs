@@ -1,8 +1,10 @@
 use crate::config::schema::{
-    default_nostr_relays, DingTalkConfig, IrcConfig, LarkReceiveMode, LinqConfig,
-    NextcloudTalkConfig, NostrConfig, ProgressMode, QQConfig, QQEnvironment, QQReceiveMode,
+    DingTalkConfig, IrcConfig, LarkReceiveMode, LinqConfig,
+    NextcloudTalkConfig, ProgressMode, QQConfig, QQEnvironment, QQReceiveMode,
     SignalConfig, StreamMode, WhatsAppConfig,
 };
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+use crate::config::schema::{default_nostr_relays, NostrConfig};
 use crate::config::{
     AutonomyConfig, BrowserConfig, ChannelsConfig, ComposioConfig, Config, DiscordConfig,
     HeartbeatConfig, HttpRequestConfig, HttpRequestCredentialProfile, IMessageConfig,

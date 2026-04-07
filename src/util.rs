@@ -71,6 +71,7 @@ pub const ALLOWED_SERIAL_PATH_PREFIXES: &[&str] = &[
 ];
 
 /// Validate serial device path against per-platform rules.
+#[allow(unused_variables)]
 pub fn is_serial_path_allowed(path: &str) -> bool {
     #[cfg(target_os = "linux")]
     {
