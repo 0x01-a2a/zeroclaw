@@ -14,12 +14,19 @@ use crate::tools::{self, Tool};
 use crate::util::truncate_with_ellipsis;
 use anyhow::Result;
 use regex::{Regex, RegexSet};
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 use rustyline::completion::{Completer, Pair};
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 use rustyline::error::ReadlineError;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 use rustyline::highlight::Highlighter;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 use rustyline::hint::Hinter;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 use rustyline::validate::Validator;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 use rustyline::{CompletionType, Config as RlConfig, Context, Editor, Helper};
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write;
@@ -182,6 +189,7 @@ fn should_treat_provider_as_vision_capable(provider_name: &str, provider: &dyn P
 
 /// Slash-command definitions for interactive-mode completion.
 /// Each entry: (trigger aliases, display label, description).
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 const SLASH_COMMANDS: &[(&[&str], &str, &str)] = &[
     (&["/help"], "/help", "Show this help message"),
     (
@@ -192,8 +200,10 @@ const SLASH_COMMANDS: &[(&[&str], &str, &str)] = &[
     (&["/quit", "/exit"], "/quit /exit", "Exit interactive mode"),
 ];
 
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 struct SlashCommandCompleter;
 
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 impl Completer for SlashCommandCompleter {
     type Candidate = Pair;
 
@@ -227,6 +237,7 @@ impl Completer for SlashCommandCompleter {
     }
 }
 
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 impl Hinter for SlashCommandCompleter {
     type Hint = String;
 
@@ -244,13 +255,16 @@ impl Hinter for SlashCommandCompleter {
     }
 }
 
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 impl Highlighter for SlashCommandCompleter {
     fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
         Cow::Owned(format!("\x1b[90m{hint}\x1b[0m"))
     }
 }
 
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 impl Validator for SlashCommandCompleter {}
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 impl Helper for SlashCommandCompleter {}
 
 static SENSITIVE_KEY_PATTERNS: LazyLock<RegexSet> = LazyLock::new(|| {
@@ -2708,6 +2722,10 @@ pub async fn run(
         println!("{response}");
         observer.record_event(&ObserverEvent::TurnComplete);
     } else {
+        #[cfg(any(target_os = "ios", target_os = "android"))]
+        anyhow::bail!("Interactive mode is not available on this platform");
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
+        {
         println!("🦀 ZeroClaw Interactive Mode");
         println!("Type /help for commands.\n");
         let cli = crate::channels::CliChannel::new();
@@ -2938,6 +2956,7 @@ pub async fn run(
             // Hard cap as a safety net.
             trim_history(&mut history, config.agent.max_history_messages);
         }
+        } // end #[cfg(not(any(target_os = "ios", target_os = "android")))]
     }
 
     let duration = start.elapsed();

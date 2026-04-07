@@ -11,6 +11,7 @@ pub mod api;
 mod openai_compat;
 mod openclaw_compat;
 pub mod sse;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub mod static_files;
 pub mod ws;
 
@@ -853,7 +854,8 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         .merge(api_router)
         // ── WebSocket agent chat ──
         .route("/ws/chat", get(ws::handle_ws_chat))
-        // ── Static assets (web dashboard) ──
+        // ── Static assets (web dashboard — desktop only) ──
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
         .route("/_app/{*path}", get(static_files::handle_static))
         // ── Config PUT with larger body limit ──
         .merge(config_put_router)
@@ -862,9 +864,13 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(REQUEST_TIMEOUT_SECS),
-        ))
-        // ── SPA fallback: non-API GET requests serve index.html ──
-        .fallback(get(static_files::handle_spa_fallback));
+        ));
+
+    // ── Fallback: SPA index.html on desktop, plain 404 on mobile ──
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    let app = app.fallback(get(static_files::handle_spa_fallback));
+    #[cfg(any(target_os = "ios", target_os = "android"))]
+    let app = app.fallback(get(|| async { (StatusCode::NOT_FOUND, "Not found") }));
 
     // Run the server
     let serve_result = axum::serve(

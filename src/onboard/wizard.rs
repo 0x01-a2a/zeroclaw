@@ -5908,6 +5908,13 @@ fn setup_channels() -> Result<ChannelsConfig> {
                 });
             }
             ChannelMenuChoice::Nostr => {
+                #[cfg(any(target_os = "ios", target_os = "android"))]
+                {
+                    println!("  Nostr channel is not available in this build.");
+                    continue;
+                }
+                #[cfg(not(any(target_os = "ios", target_os = "android")))]
+                {
                 // ── Nostr ──
                 println!();
                 println!(
@@ -5994,6 +6001,7 @@ fn setup_channels() -> Result<ChannelsConfig> {
                     style("✅").green().bold(),
                     style(relays.len()).cyan()
                 );
+                } // end #[cfg(not(mobile))]
             }
             ChannelMenuChoice::Done => break,
         }

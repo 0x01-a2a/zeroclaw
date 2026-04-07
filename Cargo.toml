@@ -128,9 +128,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 chrono-tz = "0.10"
 cron = "0.15"
 
-# Interactive CLI prompts
+# Interactive CLI prompts (console styling + dialoguer prompts are small, kept unconditional)
 dialoguer = { version = "0.12", features = ["fuzzy-select"] }
-rustyline = "17.0"
 console = "0.16"
 
 # Hardware discovery (device path globbing)
@@ -145,7 +144,7 @@ tempfile = "3.14"
 # WebSocket client channels (Discord/Lark/DingTalk/Nostr)
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
-nostr-sdk = { version = "0.44", default-features = false, features = ["nip04", "nip59"] }
+# nostr-sdk moved to target-specific section below (desktop only)
 regex = "1.10"
 regex-lite = "0.1"
 hostname = "0.4.2"
@@ -154,10 +153,7 @@ rustls-pki-types = "1.14.0"
 tokio-rustls = "0.26.4"
 webpki-roots = "1.0.6"
 
-# email
-lettre = { version = "0.11.19", default-features = false, features = ["builder", "smtp-transport", "rustls-tls"] }
-mail-parser = "0.11.2"
-async-imap = { version = "0.11",features = ["runtime-tokio"], default-features = false }
+# email — moved to target-specific section below (desktop only)
 
 # HTTP server (gateway) — replaces raw TCP for proper HTTP/1.1 compliance
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query", "ws", "macros"] }
@@ -165,9 +161,7 @@ tower = { version = "0.5", default-features = false }
 tower-http = { version = "0.6", default-features = false, features = ["limit", "timeout"] }
 http-body-util = "0.1"
 
-# Embed frontend assets into binary (web dashboard)
-rust-embed = "8"
-mime_guess = "2"
+# Web dashboard assets — moved to target-specific section below (desktop only)
 
 # OpenTelemetry — OTLP trace + metrics export.
 # Use the blocking HTTP exporter client to avoid Tokio-reactor panics in
@@ -179,6 +173,26 @@ opentelemetry-otlp = { version = "0.31", default-features = false, features = ["
 
 # Serial port for peripheral communication (STM32, etc.)
 tokio-serial = { version = "5", default-features = false, optional = true }
+
+# ── Desktop-only dependencies (excluded on iOS and Android) ──────────────────
+# These deps have no useful role on mobile: no interactive terminal, no browser
+# for the web dashboard, and Nostr/email channels are not configured on phones.
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+
+# readline REPL (rustyline is heavier — excluded on mobile where no interactive terminal exists)
+rustyline = "17.0"
+
+# Nostr channel (secp256k1 + full protocol stack — heavy)
+nostr-sdk = { version = "0.44", default-features = false, features = ["nip04", "nip59"] }
+
+# Email channel (SMTP + IMAP + MIME)
+lettre = { version = "0.11.19", default-features = false, features = ["builder", "smtp-transport", "rustls-tls"] }
+mail-parser = "0.11.2"
+async-imap = { version = "0.11", features = ["runtime-tokio"], default-features = false }
+
+# Web dashboard (embedded assets served from gateway)
+rust-embed = "8"
+mime_guess = "2"
 
 # USB device enumeration (hardware discovery) — only on platforms nusb supports
 # (Linux, macOS, Windows). Android/Termux uses target_os="android" and is excluded.

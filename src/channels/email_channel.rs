@@ -1,3 +1,4 @@
+#![cfg(not(any(target_os = "ios", target_os = "android")))]
 #![allow(clippy::uninlined_format_args)]
 #![allow(clippy::map_unwrap_or)]
 #![allow(clippy::redundant_closure_for_method_calls)]

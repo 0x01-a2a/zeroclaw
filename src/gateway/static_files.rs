@@ -1,3 +1,4 @@
+#![cfg(not(any(target_os = "ios", target_os = "android")))]
 //! Static file serving for the embedded web dashboard.
 //!
 //! Uses `rust-embed` to bundle the `web/dist/` directory into the binary at compile time.

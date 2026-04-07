@@ -1,3 +1,5 @@
+#![cfg(not(any(target_os = "ios", target_os = "android")))]
+
 use crate::channels::traits::{Channel, ChannelMessage, SendMessage};
 use anyhow::{Context, Result};
 use async_trait::async_trait;

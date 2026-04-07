@@ -21,6 +21,7 @@ pub mod clawdtalk;
 pub mod cli;
 pub mod dingtalk;
 pub mod discord;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub mod email_channel;
 pub mod github;
 pub mod imessage;
@@ -33,6 +34,7 @@ pub mod matrix;
 pub mod mattermost;
 pub mod napcat;
 pub mod nextcloud_talk;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub mod nostr;
 pub mod qq;
 pub mod signal;
@@ -55,6 +57,7 @@ pub use clawdtalk::ClawdTalkChannel;
 pub use cli::CliChannel;
 pub use dingtalk::DingTalkChannel;
 pub use discord::DiscordChannel;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub use email_channel::EmailChannel;
 pub use github::GitHubChannel;
 pub use imessage::IMessageChannel;
@@ -67,6 +70,7 @@ pub use matrix::MatrixChannel;
 pub use mattermost::MattermostChannel;
 pub use napcat::NapcatChannel;
 pub use nextcloud_talk::NextcloudTalkChannel;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub use nostr::NostrChannel;
 pub use qq::QQChannel;
 pub use signal::SignalChannel;
@@ -5054,6 +5058,7 @@ fn collect_configured_channels(
         });
     }
 
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     if let Some(ref email_cfg) = config.channels_config.email {
         channels.push(ConfiguredChannel {
             display_name: "Email",
@@ -5223,6 +5228,7 @@ fn append_zerox1_channel_if_available(
     }
 }
 
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 async fn append_nostr_channel_if_available(
     config: &Config,
     channels: &mut Vec<ConfiguredChannel>,
@@ -5250,6 +5256,7 @@ pub async fn doctor_channels(config: Config) -> Result<()> {
     let mut channels = collect_configured_channels(&config, "health check");
     let mut init_failures = Vec::new();
 
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     if let Some(reason) =
         append_nostr_channel_if_available(&config, &mut channels, "health check").await
     {
@@ -5573,6 +5580,7 @@ pub async fn start_channels(config: Config) -> Result<()> {
     // Collect active channels from a shared builder to keep startup and doctor parity.
     let mut configured_channels = collect_configured_channels(&config, "runtime startup");
     let mut init_failures = Vec::new();
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     if let Some(reason) =
         append_nostr_channel_if_available(&config, &mut configured_channels, "runtime startup")
             .await
