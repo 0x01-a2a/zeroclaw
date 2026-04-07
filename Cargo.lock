@@ -4759,7 +4759,7 @@ dependencies = [
 
 [[package]]
 name = "plugin-zerox1"
-version = "0.1.13"
+version = "0.3.5"
 dependencies = [
  "anyhow",
  "base64",
@@ -9078,7 +9078,7 @@ dependencies = [
 
 [[package]]
 name = "zeroclaw"
-version = "0.1.13"
+version = "0.3.5"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -9177,7 +9177,7 @@ dependencies = [
 
 [[package]]
 name = "zeroclaw-robot-kit"
-version = "0.1.13"
+version = "0.3.5"
 dependencies = [
  "anyhow",
  "async-trait",
