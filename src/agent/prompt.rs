@@ -114,6 +114,10 @@ impl PromptSection for IdentitySection {
         if memory_path.exists() {
             inject_workspace_file(&mut prompt, ctx.workspace_dir, "MEMORY.md");
         }
+        let persona_path = ctx.workspace_dir.join("PERSONA.md");
+        if persona_path.exists() {
+            inject_workspace_file(&mut prompt, ctx.workspace_dir, "PERSONA.md");
+        }
 
         let extra_files = ctx
             .identity_config
