@@ -5254,7 +5254,7 @@ async fn append_nostr_channel_if_available(
 /// Run health checks for configured channels.
 pub async fn doctor_channels(config: Config) -> Result<()> {
     let mut channels = collect_configured_channels(&config, "health check");
-    let mut init_failures = Vec::new();
+    let mut init_failures: Vec<String> = Vec::new();
 
     #[cfg(not(any(target_os = "ios", target_os = "android")))]
     if let Some(reason) =
@@ -5579,7 +5579,7 @@ pub async fn start_channels(config: Config) -> Result<()> {
 
     // Collect active channels from a shared builder to keep startup and doctor parity.
     let mut configured_channels = collect_configured_channels(&config, "runtime startup");
-    let mut init_failures = Vec::new();
+    let mut init_failures: Vec<String> = Vec::new();
     #[cfg(not(any(target_os = "ios", target_os = "android")))]
     if let Some(reason) =
         append_nostr_channel_if_available(&config, &mut configured_channels, "runtime startup")
