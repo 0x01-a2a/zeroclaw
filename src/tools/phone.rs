@@ -1272,3 +1272,283 @@ phone_tool!(
         }
     }
 );
+
+// ── PhoneA11ySwipe ────────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneA11ySwipe,
+    name = "phone_a11y_swipe",
+    desc = "Perform a raw swipe gesture on the screen from (x1,y1) to (x2,y2). \
+            Works where SCROLL_FORWARD/BACKWARD accessibility actions do not apply — \
+            carousels, maps, custom views, pull-to-refresh. \
+            duration_ms controls speed (50–3000 ms, default 300). \
+            Coordinates are in screen pixels. Full build only.",
+    schema = serde_json::json!({
+        "type": "object",
+        "required": ["x1", "y1", "x2", "y2"],
+        "properties": {
+            "x1":          { "type": "integer", "description": "Start X coordinate (pixels)" },
+            "y1":          { "type": "integer", "description": "Start Y coordinate (pixels)" },
+            "x2":          { "type": "integer", "description": "End X coordinate (pixels)" },
+            "y2":          { "type": "integer", "description": "End Y coordinate (pixels)" },
+            "duration_ms": { "type": "integer", "description": "Swipe duration in ms (50–3000)", "default": 300 }
+        }
+    }),
+    exec = |self, args| {
+        match self.post("/phone/a11y/swipe").json(&args).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneA11yType ─────────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneA11yType,
+    name = "phone_a11y_type",
+    desc = "Type text into an editable field. Without view_id, targets the currently \
+            focused or first editable field on screen. Optionally specify view_id \
+            (from phone_a11y_tree) to target a specific field. \
+            Returns { success: bool }. Full build only.",
+    schema = serde_json::json!({
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+            "text":    { "type": "string", "description": "Text to type into the field" },
+            "view_id": { "type": "string", "description": "Optional: Android resource ID to target (e.g. com.app:id/input)" }
+        }
+    }),
+    exec = |self, args| {
+        match self.post("/phone/a11y/type").json(&args).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneA11yWaitFor ──────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneA11yWaitFor,
+    name = "phone_a11y_wait_for",
+    desc = "Wait for a UI element to appear on screen, then optionally tap it. \
+            Match by view_id, text, content_desc, or class_name (at least one required). \
+            timeout_ms: how long to wait (100–30000 ms, default 5000). \
+            tap: if true, click the element once found (default false). \
+            Returns { found: bool, tapped: bool, node?: {...} }. Full build only.",
+    schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "view_id":      { "type": "string",  "description": "Android resource ID (e.g. com.app:id/btn_ok)" },
+            "text":         { "type": "string",  "description": "Element text to match" },
+            "content_desc": { "type": "string",  "description": "Content description to match" },
+            "class_name":   { "type": "string",  "description": "Class name to match (e.g. android.widget.Button)" },
+            "exact_text":   { "type": "boolean", "description": "Require exact text match (default false)", "default": false },
+            "timeout_ms":   { "type": "integer", "description": "Max wait time in ms (100–30000)", "default": 5000 },
+            "tap":          { "type": "boolean", "description": "Tap the element once found (default false)", "default": false }
+        }
+    }),
+    exec = |self, args| {
+        match self.post("/phone/a11y/wait_for").json(&args).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneA11yScrollFind ───────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneA11yScrollFind,
+    name = "phone_a11y_scroll_find",
+    desc = "Scroll a list or container until a target element appears, then optionally tap it. \
+            Match by view_id, text, content_desc, or class_name (at least one required). \
+            direction: up|down|left|right (default down). \
+            max_scrolls: how many scroll steps before giving up (1–50, default 10). \
+            container_view_id: optional resource ID of the scrollable container to scroll. \
+            wait_after_ms: pause after each scroll step (100–2000 ms, default 400). \
+            tap: whether to click on find (default true). \
+            Returns { found: bool, tapped: bool }. Full build only.",
+    schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "view_id":           { "type": "string",  "description": "Android resource ID to find" },
+            "text":              { "type": "string",  "description": "Element text to find" },
+            "content_desc":      { "type": "string",  "description": "Content description to find" },
+            "class_name":        { "type": "string",  "description": "Class name to find" },
+            "exact_text":        { "type": "boolean", "description": "Require exact text match (default false)", "default": false },
+            "direction":         { "type": "string",  "description": "Scroll direction: up | down | left | right", "default": "down" },
+            "max_scrolls":       { "type": "integer", "description": "Max scroll steps (1–50)", "default": 10 },
+            "container_view_id": { "type": "string",  "description": "Resource ID of scrollable container (optional)" },
+            "wait_after_ms":     { "type": "integer", "description": "Pause after each scroll (100–2000 ms)", "default": 400 },
+            "tap":               { "type": "boolean", "description": "Tap element on find (default true)", "default": true }
+        }
+    }),
+    exec = |self, args| {
+        match self.post("/phone/a11y/scroll_find").json(&args).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneA11yTapText ──────────────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneA11yTapText,
+    name = "phone_a11y_tap_text",
+    desc = "Find the first UI element whose text matches the given string and click it. \
+            Simpler than phone_a11y_action when you do not have a viewId. \
+            exact: if false (default), partial match is used. \
+            timeout_ms: how long to wait for the element (100–15000 ms, default 3000). \
+            Returns { success: bool }. Full build only.",
+    schema = serde_json::json!({
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+            "text":       { "type": "string",  "description": "Text to find and tap" },
+            "exact":      { "type": "boolean", "description": "Exact text match (default false)", "default": false },
+            "timeout_ms": { "type": "integer", "description": "Max wait time in ms (100–15000)", "default": 3000 }
+        }
+    }),
+    exec = |self, args| {
+        match self.post("/phone/a11y/tap_text").json(&args).send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneA11yTreeInteractive ──────────────────────────────────────────────────
+
+phone_tool!(
+    PhoneA11yTreeInteractive,
+    name = "phone_a11y_tree_interactive",
+    desc = "Return a compact accessibility tree containing only interactive nodes \
+            (clickable, editable, focusable). Much smaller payload than phone_a11y_tree — \
+            use this when you need to locate a tap target without processing the full tree. \
+            Result is cached for 5 seconds. \
+            Returns { package, activity, interactive_count, nodes: [...] }. Full build only.",
+    schema = serde_json::json!({
+        "type": "object",
+        "properties": {}
+    }),
+    exec = |self, _args| {
+        match self.get("/phone/a11y/tree_interactive").send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+);
+
+// ── PhoneA11yExecutePlan ──────────────────────────────────────────────────────
+
+pub struct PhoneA11yExecutePlan {
+    bridge_url:   String,
+    secret:       String,
+}
+
+impl PhoneA11yExecutePlan {
+    pub fn new(bridge_url: String, secret: String, _timeout_secs: u64) -> Self {
+        Self { bridge_url, secret }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::tools::traits::Tool for PhoneA11yExecutePlan {
+    fn name(&self) -> &str { "phone_a11y_execute_plan" }
+
+    fn description(&self) -> &str {
+        "Execute a multi-step UI automation plan atomically on the device without \
+         round-tripping the LLM between steps. Up to 50 steps run sequentially; \
+         if stop_on_failure is true (default), execution halts on the first failed step. \
+         \n\
+         Step types and their fields:\n\
+         - wait_for:    view_id|text|content_desc|class_name, timeout_ms (def 5000), tap (def false)\n\
+         - scroll_find: view_id|text|content_desc|class_name, direction (down), max_scrolls (10), \
+           container_view_id, wait_after_ms (400), tap (def true)\n\
+         - tap_text:    text (required), exact (def false), timeout_ms (def 3000)\n\
+         - tap:         x (required), y (required)\n\
+         - action:      view_id (required), action (required: click|long_click|scroll_forward|...), text\n\
+         - type:        text (required), view_id (optional)\n\
+         - global:      action (required: back|home|recents|notifications|quick_settings|power_dialog)\n\
+         - swipe:       x1, y1, x2, y2 (all required), duration_ms (def 300)\n\
+         - launch:      package (required — use phone_app_list to find package names)\n\
+         - screenshot:  (no fields — captures screenshot; detail contains base64 on success)\n\
+         - sleep:       ms (50–5000, def 500)\n\
+         \n\
+         Returns { steps_run, steps_succeeded, all_succeeded, failed_step?, results: [{step, type, success, detail}] }. \
+         Full build only."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "required": ["steps"],
+            "properties": {
+                "steps": {
+                    "type": "array",
+                    "description": "Ordered list of steps to execute (max 50)",
+                    "maxItems": 50,
+                    "items": {
+                        "type": "object",
+                        "required": ["type"],
+                        "properties": {
+                            "type":              { "type": "string",  "description": "Step type: wait_for | scroll_find | tap_text | tap | action | type | global | swipe | launch | screenshot | sleep" },
+                            "view_id":           { "type": "string",  "description": "Android resource ID" },
+                            "text":              { "type": "string",  "description": "Text to match or type" },
+                            "content_desc":      { "type": "string",  "description": "Content description to match" },
+                            "class_name":        { "type": "string",  "description": "Class name to match" },
+                            "exact":             { "type": "boolean", "description": "Exact text match" },
+                            "exact_text":        { "type": "boolean", "description": "Exact text match (wait_for/scroll_find)" },
+                            "timeout_ms":        { "type": "integer", "description": "Timeout in ms" },
+                            "tap":               { "type": "boolean", "description": "Tap on find (wait_for/scroll_find)" },
+                            "direction":         { "type": "string",  "description": "Scroll direction: up | down | left | right" },
+                            "max_scrolls":       { "type": "integer", "description": "Max scroll steps" },
+                            "container_view_id": { "type": "string",  "description": "Scrollable container resource ID" },
+                            "wait_after_ms":     { "type": "integer", "description": "Pause after each scroll (ms)" },
+                            "x":                 { "type": "integer", "description": "Tap X coordinate" },
+                            "y":                 { "type": "integer", "description": "Tap Y coordinate" },
+                            "action":            { "type": "string",  "description": "Accessibility action name" },
+                            "x1":                { "type": "integer", "description": "Swipe start X" },
+                            "y1":                { "type": "integer", "description": "Swipe start Y" },
+                            "x2":                { "type": "integer", "description": "Swipe end X" },
+                            "y2":                { "type": "integer", "description": "Swipe end Y" },
+                            "duration_ms":       { "type": "integer", "description": "Swipe duration in ms" },
+                            "package":           { "type": "string",  "description": "App package name to launch" },
+                            "ms":                { "type": "integer", "description": "Sleep duration in ms (50–5000)" }
+                        }
+                    }
+                },
+                "stop_on_failure": {
+                    "type": "boolean",
+                    "description": "Stop execution on first failed step (default true)",
+                    "default": true
+                }
+            }
+        })
+    }
+
+    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
+        let steps = args["steps"].as_array().map(|a| a.len()).unwrap_or(0);
+        if steps == 0 {
+            return err_result("steps array is required and must not be empty");
+        }
+        if steps > 50 {
+            return err_result("steps array exceeds maximum of 50");
+        }
+        // Plans can include sleep steps and wait_for loops — use a generous timeout.
+        let req = reqwest::Client::builder()
+            .timeout(Duration::from_secs(120))
+            .build()
+            .expect("reqwest client build failed")
+            .post(format!("{}/phone/a11y/execute_plan", self.bridge_url))
+            .header("X-Bridge-Token", &self.secret)
+            .json(&args);
+        match req.send().await {
+            Ok(r)  => ok_result(r.text().await.unwrap_or_default()),
+            Err(e) => err_result(format!("bridge request failed: {e}")),
+        }
+    }
+}

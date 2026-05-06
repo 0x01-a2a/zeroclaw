@@ -22,7 +22,6 @@ pub mod bg_run;
 pub mod browser;
 pub mod browser_open;
 pub mod channel_ack_config;
-pub mod cli_discovery;
 pub mod composio;
 pub mod content_search;
 pub mod cron_add;
@@ -39,14 +38,7 @@ pub mod feishu_doc;
 pub mod file_edit;
 pub mod file_read;
 pub mod file_write;
-pub mod git_operations;
 pub mod glob_search;
-#[cfg(feature = "hardware")]
-pub mod hardware_board_info;
-#[cfg(feature = "hardware")]
-pub mod hardware_memory_map;
-#[cfg(feature = "hardware")]
-pub mod hardware_memory_read;
 pub mod http_request;
 pub mod image_info;
 pub mod mcp_client;
@@ -58,7 +50,6 @@ pub mod memory_observe;
 pub mod memory_recall;
 pub mod memory_store;
 pub mod model_routing_config;
-pub mod openclaw_migration;
 pub mod pdf_read;
 pub mod phone;
 #[cfg(feature = "phone-smart")]
@@ -115,14 +106,7 @@ pub use feishu_doc::FeishuDocTool;
 pub use file_edit::FileEditTool;
 pub use file_read::FileReadTool;
 pub use file_write::FileWriteTool;
-pub use git_operations::GitOperationsTool;
 pub use glob_search::GlobSearchTool;
-#[cfg(feature = "hardware")]
-pub use hardware_board_info::HardwareBoardInfoTool;
-#[cfg(feature = "hardware")]
-pub use hardware_memory_map::HardwareMemoryMapTool;
-#[cfg(feature = "hardware")]
-pub use hardware_memory_read::HardwareMemoryReadTool;
 pub use http_request::HttpRequestTool;
 pub use image_info::ImageInfoTool;
 pub use mcp_client::McpRegistry;
@@ -132,7 +116,6 @@ pub use memory_observe::MemoryObserveTool;
 pub use memory_recall::MemoryRecallTool;
 pub use memory_store::MemoryStoreTool;
 pub use model_routing_config::ModelRoutingConfigTool;
-pub use openclaw_migration::OpenClawMigrationTool;
 pub use pdf_read::PdfReadTool;
 pub use pptx_read::PptxReadTool;
 pub use process::ProcessTool;
@@ -423,17 +406,9 @@ pub fn all_tools_with_runtime(
             runtime.clone(),
             Some(syscall_detector),
         )));
-        tool_arcs.push(Arc::new(GitOperationsTool::new(
-            security.clone(),
-            workspace_dir.to_path_buf(),
-        )));
     }
 
     if has_filesystem_access {
-        tool_arcs.push(Arc::new(OpenClawMigrationTool::new(
-            config.clone(),
-            security.clone(),
-        )));
         tool_arcs.push(Arc::new(FileReadTool::new(security.clone())));
         tool_arcs.push(Arc::new(FileWriteTool::new(security.clone())));
         tool_arcs.push(Arc::new(FileEditTool::new(security.clone())));
@@ -777,6 +752,19 @@ pub fn all_tools_with_runtime(
             tool_arcs.push(Arc::new(phone::PhoneRecoveryStatus::new(url.clone(), secret.clone(), timeout)));
             tool_arcs.push(Arc::new(phone::PhoneClipboardRead::new(url.clone(), secret.clone(), timeout)));
 
+            // ── Tools supported on both iOS and Android ────────────────────────
+            // Camera, audio, IMU, notify, vibrate, audio profile are all available
+            // on iOS via PhoneBridgeServer.swift (with matching endpoint aliases).
+            tool_arcs.push(Arc::new(phone::PhoneCameraCapture::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneAudioRecord::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneImuSnapshot::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneImuRecord::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneNotify::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneNotificationsDismiss::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneVibrate::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneAudioProfileGet::new(url.clone(), secret.clone(), timeout)));
+            tool_arcs.push(Arc::new(phone::PhoneAudioProfileSet::new(url.clone(), secret.clone(), timeout)));
+
             // ── Android-only tools — not registered on iOS ─────────────────────
             if !is_ios {
                 tool_arcs.push(Arc::new(phone::PhoneSmsRead::new(url.clone(), secret.clone(), timeout)));
@@ -785,34 +773,32 @@ pub fn all_tools_with_runtime(
                 tool_arcs.push(Arc::new(phone::PhoneCallsPending::new(url.clone(), secret.clone(), timeout)));
                 tool_arcs.push(Arc::new(phone::PhoneCallsRespond::new(url.clone(), secret.clone(), timeout)));
                 tool_arcs.push(Arc::new(phone::PhoneCallsHistory::new(url.clone(), secret.clone(), timeout)));
-                tool_arcs.push(Arc::new(phone::PhoneNotify::new(url.clone(), secret.clone(), timeout)));
                 tool_arcs.push(Arc::new(phone::PhoneNotificationsReply::new(url.clone(), secret.clone(), timeout)));
-                tool_arcs.push(Arc::new(phone::PhoneNotificationsDismiss::new(url.clone(), secret.clone(), timeout)));
                 tool_arcs.push(Arc::new(phone::PhoneA11yScreenshot::new(url.clone(), secret.clone(), timeout)));
                 tool_arcs.push(Arc::new(phone::PhoneA11yTree::new(url.clone(), secret.clone(), timeout)));
                 tool_arcs.push(Arc::new(phone::PhoneA11yClick::new(url.clone(), secret.clone(), timeout)));
                 tool_arcs.push(Arc::new(phone::PhoneA11yGlobal::new(url.clone(), secret.clone(), timeout)));
                 tool_arcs.push(Arc::new(phone::PhoneA11yAction::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneA11ySwipe::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneA11yType::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneA11yWaitFor::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneA11yScrollFind::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneA11yTapText::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneA11yTreeInteractive::new(url.clone(), secret.clone(), timeout)));
+                tool_arcs.push(Arc::new(phone::PhoneA11yExecutePlan::new(url.clone(), secret.clone(), timeout)));
                 tool_arcs.push(Arc::new(phone::PhoneA11yVision::new(url.clone(), secret.clone(), timeout)));
                 tool_arcs.push(Arc::new(phone::PhoneClipboardWrite::new(url.clone(), secret.clone(), timeout)));
-                tool_arcs.push(Arc::new(phone::PhoneCameraCapture::new(url.clone(), secret.clone(), timeout)));
-                tool_arcs.push(Arc::new(phone::PhoneAudioRecord::new(url.clone(), secret.clone(), timeout)));
-                tool_arcs.push(Arc::new(phone::PhoneImuSnapshot::new(url.clone(), secret.clone(), timeout)));
-                tool_arcs.push(Arc::new(phone::PhoneImuRecord::new(url.clone(), secret.clone(), timeout)));
                 tool_arcs.push(Arc::new(phone::PhoneAppUsage::new(url.clone(), secret.clone(), timeout)));
                 tool_arcs.push(Arc::new(phone::PhoneAlarmSet::new(url.clone(), secret.clone(), timeout)));
-                tool_arcs.push(Arc::new(phone::PhoneAudioProfileGet::new(url.clone(), secret.clone(), timeout)));
-                tool_arcs.push(Arc::new(phone::PhoneAudioProfileSet::new(url.clone(), secret.clone(), timeout)));
-                tool_arcs.push(Arc::new(phone::PhoneVibrate::new(url.clone(), secret.clone(), timeout)));
                 tool_arcs.push(Arc::new(phone::PhoneHighlightStart::new(url.clone(), secret.clone(), timeout)));
                 tool_arcs.push(Arc::new(phone::PhoneHighlightStop::new(url.clone(), secret.clone(), timeout)));
                 tool_arcs.push(Arc::new(phone::PhoneHighlightPublish::new(url.clone(), secret.clone(), timeout)));
             }
 
             if is_ios {
-                tracing::info!("phone tools: registered 22 bridge tools (iOS mode, 28 android-only skipped)");
+                tracing::info!("phone tools: registered 31 bridge tools (iOS mode, 26 android-only skipped)");
             } else {
-                tracing::info!("phone tools: registered 50 bridge tools");
+                tracing::info!("phone tools: registered 57 bridge tools");
             }
 
             // Smart aggregator tools — require SMS access, skip on iOS
@@ -1058,7 +1044,6 @@ mod tests {
         assert!(names.contains(&"proxy_config"));
         assert!(names.contains(&"web_access_config"));
         assert!(names.contains(&"web_search_config"));
-        assert!(names.contains(&"openclaw_migration"));
     }
 
     #[test]
@@ -1103,7 +1088,6 @@ mod tests {
         assert!(names.contains(&"proxy_config"));
         assert!(names.contains(&"web_access_config"));
         assert!(names.contains(&"web_search_config"));
-        assert!(names.contains(&"openclaw_migration"));
     }
 
     #[test]

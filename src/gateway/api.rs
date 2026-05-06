@@ -457,13 +457,11 @@ pub async fn handle_api_cost(
     }
 }
 
-/// GET /api/cli-tools — discovered CLI tools
+/// GET /api/cli-tools — cli discovery removed
 pub async fn handle_api_cli_tools(
     State(_state): State<AppState>,
 ) -> impl IntoResponse {
-    let tools = crate::tools::cli_discovery::discover_cli_tools(&[], &[]);
-
-    Json(serde_json::json!({"cli_tools": tools})).into_response()
+    Json(serde_json::json!({"cli_tools": []})).into_response()
 }
 
 /// GET /api/health — component health snapshot
